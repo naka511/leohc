@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,6 +32,8 @@ const (
 const (
 	defaultClientTimeout = 120 * time.Second
 	defaultInitWait      = 180 * time.Second
+	s3UploadMaxAttempts  = 3
+	s3UploadRetryDelay   = 2 * time.Second
 )
 
 // TokenSession holds a Leonardo session with cached JWT.
@@ -1182,6 +1186,36 @@ func buildS3UploadBody(fields map[string]string, imageData []byte, contentType s
 	return body.Bytes(), boundary
 }
 
+func isRetryableUploadError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "connection reset by peer"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "temporary failure"),
+		strings.Contains(msg, "temporarily unavailable"),
+		strings.Contains(msg, "unexpected eof"),
+		strings.Contains(msg, "eof"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableUploadStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return statusCode >= 500
+	}
+}
+
 // UploadImageToS3 uploads the actual image data to the S3 presigned URL.
 // fieldsJSON is the JSON string returned by uploadImage, containing S3 form fields.
 func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData []byte, contentType string) error {
@@ -1192,23 +1226,44 @@ func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData 
 
 	body, boundary := buildS3UploadBody(fields, imageData, contentType)
 
-	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	for attempt := 1; attempt <= s3UploadMaxAttempts; attempt++ {
+		req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("s3 upload failed: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if attempt < s3UploadMaxAttempts && isRetryableUploadError(err) {
+				log.Printf("[Leonardo] S3 upload attempt %d/%d failed: %v; retrying", attempt, s3UploadMaxAttempts, err)
+				time.Sleep(time.Duration(attempt) * s3UploadRetryDelay)
+				continue
+			}
+			return fmt.Errorf("s3 upload failed after %d attempt(s): %w", attempt, err)
+		}
 
-	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("s3 upload returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 300)]))
+		resp.Body.Close()
+
+		if resp.StatusCode < 300 {
+			if attempt > 1 {
+				log.Printf("[Leonardo] Image uploaded to S3 successfully on attempt %d/%d", attempt, s3UploadMaxAttempts)
+			} else {
+				log.Printf("[Leonardo] Image uploaded to S3 successfully")
+			}
+			return nil
+		}
+
+		snippet := string(respBody[:min(len(respBody), 300)])
+		statusErr := fmt.Errorf("s3 upload returned %d: %s", resp.StatusCode, snippet)
+		if attempt < s3UploadMaxAttempts && isRetryableUploadStatus(resp.StatusCode) {
+			log.Printf("[Leonardo] S3 upload attempt %d/%d returned retryable status %d; retrying", attempt, s3UploadMaxAttempts, resp.StatusCode)
+			time.Sleep(time.Duration(attempt) * s3UploadRetryDelay)
+			continue
+		}
+		return statusErr
 	}
 
-	log.Printf("[Leonardo] Image uploaded to S3 successfully")
-	return nil
+	return fmt.Errorf("s3 upload failed after %d attempt(s)", s3UploadMaxAttempts)
 }
