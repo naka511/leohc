@@ -374,6 +374,24 @@ func (rc *readCloser) Read(p []byte) (int, error) {
 }
 func (rc *readCloser) Close() error { return nil }
 
+func (s *Server) reloadRuntimeClients() {
+	basicProxy := ""
+	if s.Config.GetBool("use_proxy", false) {
+		basicProxy = s.Config.GetString("proxy", "")
+	}
+
+	s.LeonardoClient = leonardo.NewClient(basicProxy)
+	s.leoSessionMu.Lock()
+	s.leoSessions = make(map[string]*leonardo.TokenSession)
+	s.leoSessionMu.Unlock()
+
+	adobeClient := adobe.NewClient()
+	if s.Registry != nil {
+		s.Registry.Register(adobeClient)
+	}
+	s.Provider = adobeClient
+}
+
 func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Request, prompt string, modelID string, duration int, width int, height int) {
 	if s.LeonardoClient == nil {
 		writeJSON(w, 500, errorResp("Leonardo client not initialized", "server_error"))

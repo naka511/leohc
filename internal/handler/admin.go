@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -568,6 +569,9 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
 		return
 	}
+	if rawPwd, ok := updates["admin_password"].(string); ok && strings.TrimSpace(rawPwd) == "***" {
+		updates["admin_password"] = s.Config.GetString("admin_password", "admin")
+	}
 	for k, v := range updates {
 		s.Config.Set(k, v)
 	}
@@ -575,7 +579,49 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"detail": "failed to save config"})
 		return
 	}
+	s.reloadRuntimeClients()
 	writeJSON(w, 200, map[string]interface{}{"ok": true})
+}
+
+// HandleProxyTest handles POST /api/v1/proxy/test using the current form values.
+func (s *Server) HandleProxyTest(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var body struct {
+		UseProxy         bool   `json:"use_proxy"`
+		Proxy            string `json:"proxy"`
+		ResourceUseProxy bool   `json:"resource_use_proxy"`
+		ResourceProxy    string `json:"resource_proxy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	basicProxy := strings.TrimSpace(body.Proxy)
+	resourceProxy := strings.TrimSpace(body.ResourceProxy)
+	if body.UseProxy && basicProxy == "" {
+		writeJSON(w, 400, map[string]string{"detail": "proxy is required when basic proxy is enabled"})
+		return
+	}
+	if body.ResourceUseProxy && resourceProxy == "" {
+		writeJSON(w, 400, map[string]string{"detail": "resource_proxy is required when resource proxy is enabled"})
+		return
+	}
+
+	result := map[string]interface{}{
+		"connectivity": map[string]interface{}{
+			"basic":    runHTTPProxyConnectivityTest(body.UseProxy, basicProxy, leonardo.SessionURL),
+			"resource": runHTTPProxyConnectivityTest(body.ResourceUseProxy, resourceProxy, "https://app.leonardo.ai/"),
+		},
+		"business": map[string]interface{}{
+			"basic": s.runLeonardoProxyBusinessTest(body.UseProxy, basicProxy),
+		},
+	}
+	writeJSON(w, 200, result)
 }
 
 // HandleHealth handles GET /health.
@@ -1344,4 +1390,135 @@ func statusForLeonardoRefreshError(err error) int {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadRequest
+}
+
+func runHTTPProxyConnectivityTest(enabled bool, proxyStr, targetURL string) map[string]interface{} {
+	result := map[string]interface{}{
+		"enabled":    enabled,
+		"proxy":      strings.TrimSpace(proxyStr),
+		"target_url": targetURL,
+	}
+	if !enabled {
+		result["message"] = "proxy disabled"
+		return result
+	}
+	if strings.TrimSpace(proxyStr) == "" {
+		result["message"] = "proxy is empty"
+		return result
+	}
+
+	start := time.Now()
+	statusCode, message, err := doHTTPProxyProbe(proxyStr, targetURL)
+	result["elapsed_ms"] = time.Since(start).Milliseconds()
+	if statusCode > 0 {
+		result["status_code"] = statusCode
+	}
+	if err != nil {
+		result["ok"] = false
+		result["message"] = err.Error()
+		return result
+	}
+	result["ok"] = true
+	result["message"] = message
+	return result
+}
+
+func doHTTPProxyProbe(proxyStr, targetURL string) (int, string, error) {
+	proxyURL, err := url.Parse(strings.TrimSpace(proxyStr))
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid proxy url: %w", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   15 * time.Second,
+	}
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("User-Agent", "leo-go-proxy-test/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+		return resp.StatusCode, "upstream responded through proxy", nil
+	}
+	return resp.StatusCode, fmt.Sprintf("upstream returned %d", resp.StatusCode), nil
+}
+
+func (s *Server) runLeonardoProxyBusinessTest(enabled bool, proxyStr string) map[string]interface{} {
+	result := map[string]interface{}{
+		"enabled":    enabled,
+		"target_url": leonardo.SessionURL,
+	}
+	if !enabled {
+		result["message"] = "proxy disabled"
+		return result
+	}
+	if strings.TrimSpace(proxyStr) == "" {
+		result["message"] = "proxy is empty"
+		return result
+	}
+
+	var tokenID, tokenValue, tokenSource string
+	for _, t := range s.TokenMgr.ListFull() {
+		platform, _ := t["platform"].(string)
+		status, _ := t["status"].(string)
+		if platform != "leonardo" || status != "active" {
+			continue
+		}
+		tokenID, _ = t["id"].(string)
+		tokenValue, _ = t["value"].(string)
+		tokenSource, _ = t["source"].(string)
+		if tokenValue != "" {
+			break
+		}
+	}
+
+	if tokenValue == "" {
+		result["message"] = "no active Leonardo token available for business test"
+		return result
+	}
+
+	result["token_id"] = tokenID
+	result["token_source"] = tokenSource
+	result["token_preview"] = maskProxyTokenValue(tokenValue)
+
+	client := leonardo.NewClient(strings.TrimSpace(proxyStr))
+	start := time.Now()
+	session, credits, err := client.ValidateToken(tokenValue)
+	result["elapsed_ms"] = time.Since(start).Milliseconds()
+	if err != nil {
+		result["ok"] = false
+		result["status_code"] = statusForLeonardoRefreshError(err)
+		result["message"] = err.Error()
+		return result
+	}
+
+	result["ok"] = true
+	result["status_code"] = 200
+	if session != nil {
+		result["account_id"] = session.HasuraUserID
+		result["email"] = session.Email
+	}
+	if credits != nil {
+		result["message"] = fmt.Sprintf("plan=%s, credits=%d", credits.Plan, credits.TotalTokens)
+	} else {
+		result["message"] = "session refresh succeeded"
+	}
+	return result
+}
+
+func maskProxyTokenValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 10 {
+		return "***"
+	}
+	return value[:5] + "..." + value[len(value)-5:]
 }

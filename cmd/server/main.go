@@ -62,7 +62,10 @@ func main() {
 	defaultProvider, _ := registry.Default()
 
 	// Leonardo client
-	proxy := cfg.GetString("proxy", "")
+	proxy := ""
+	if cfg.GetBool("use_proxy", false) {
+		proxy = cfg.GetString("proxy", "")
+	}
 	leoClient := leonardo.NewClient(proxy)
 	log.Printf("[leonardo] client initialized")
 
@@ -148,7 +151,7 @@ func main() {
 	// ─── Refresh profiles (stubs) ───
 	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleStubPost)
 	mux.HandleFunc("/api/v1/refresh-profiles/export-cookies", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/proxy/test", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/proxy/test", srv.HandleProxyTest)
 
 	// ─── Leonardo API ───
 	mux.HandleFunc("/api/v1/leonardo/validate", srv.HandleLeonardoValidate)

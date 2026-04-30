@@ -59,7 +59,12 @@ func NewClient() *Client {
 		SecChUA:   `"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"`,
 		Timeout:   cfg.GetInt("generate_timeout", 300),
 	}
-	c.BasicProxy = cfg.GetString("proxy")
+	if cfg.GetBool("use_proxy", false) {
+		c.BasicProxy = cfg.GetString("proxy")
+	}
+	if cfg.GetBool("resource_use_proxy", false) {
+		c.ResProxy = cfg.GetString("resource_proxy")
+	}
 	c.httpClient = c.buildHTTPClient(c.BasicProxy)
 	return c
 }
