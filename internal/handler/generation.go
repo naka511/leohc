@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"leo-go/internal/config"
@@ -25,6 +26,8 @@ type Server struct {
 	GeneratedDir   string
 	LeonardoClient *leonardo.Client
 	ReqLog         *reqlog.Store
+	leoSessionMu   sync.Mutex
+	leoSessions    map[string]*leonardo.TokenSession
 }
 
 // requireAPIKey validates the X-API-Key or Authorization header.
@@ -405,14 +408,14 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 
 	if s.ReqLog != nil {
 		s.ReqLog.Add(reqlog.Entry{
-			Timestamp:        float64(startTime.Unix()),
-			StatusCode:       200,
-			TaskStatus:       "IN_PROGRESS",
-			Type:             "video",
-			Model:            fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
-			Prompt:           prompt,
-			GenerationID:     result.GenerationID,
-			Operation:        "leonardo.generate",
+			Timestamp:    float64(startTime.Unix()),
+			StatusCode:   200,
+			TaskStatus:   "IN_PROGRESS",
+			Type:         "video",
+			Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
+			Prompt:       prompt,
+			GenerationID: result.GenerationID,
+			Operation:    "leonardo.generate",
 		})
 	}
 

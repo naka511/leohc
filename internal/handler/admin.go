@@ -261,7 +261,7 @@ func (s *Server) HandleLeonardoValidate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
 		return
 	}
-	session, credits, err := s.LeonardoClient.ValidateToken(body.Token)
+	session, credits, err := s.validateLeonardoToken(body.Token, body.Token)
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{
 			"ok": false, "detail": err.Error(),
@@ -313,7 +313,7 @@ func (s *Server) HandleLeonardoCredits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tokenValue, _ := tokenInfo["value"].(string)
-	session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+	session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{
 			"ok": false, "detail": err.Error(),
@@ -388,7 +388,7 @@ func (s *Server) validateLeonardoTokenAsync(tokenID, rawToken string) {
 		return
 	}
 
-	session, credits, err := s.LeonardoClient.ValidateToken(rawToken)
+	session, credits, err := s.validateLeonardoToken(tokenID, rawToken)
 	if err != nil {
 		log.Printf("[token] leonardo validation skipped for %s: %v", tokenID, err)
 		return
@@ -411,6 +411,59 @@ func (s *Server) validateLeonardoTokenAsync(tokenID, rawToken string) {
 	}
 
 	log.Printf("[token] leonardo validation completed for %s (%s)", tokenID, session.Email)
+}
+
+func (s *Server) validateLeonardoToken(tokenID, rawToken string) (*leonardo.TokenSession, *leonardo.Credits, error) {
+	if s.LeonardoClient == nil {
+		return nil, nil, fmt.Errorf("Leonardo client not initialized")
+	}
+	session := s.getOrCreateLeonardoSession(tokenID, rawToken)
+	if session == nil {
+		return nil, nil, fmt.Errorf("token value is required")
+	}
+	credits, err := s.LeonardoClient.QueryCredits(session)
+	if err != nil {
+		return session, nil, fmt.Errorf("token validation failed: %w", err)
+	}
+	return session, credits, nil
+}
+
+func (s *Server) getOrCreateLeonardoSession(tokenID, rawToken string) *leonardo.TokenSession {
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return nil
+	}
+
+	key := strings.TrimSpace(tokenID)
+	if key == "" {
+		key = "raw:" + rawToken
+	} else {
+		key = "id:" + key
+	}
+
+	s.leoSessionMu.Lock()
+	defer s.leoSessionMu.Unlock()
+
+	if s.leoSessions == nil {
+		s.leoSessions = make(map[string]*leonardo.TokenSession)
+	}
+
+	if session, ok := s.leoSessions[key]; ok {
+		if strings.TrimSpace(session.FullCookie) != rawToken {
+			session.FullCookie = rawToken
+			session.JWT = ""
+			session.JWTExpiry = time.Time{}
+			session.CognitoSub = ""
+			session.HasuraUserID = ""
+			session.Email = ""
+			session.Plan = ""
+		}
+		return session
+	}
+
+	session := &leonardo.TokenSession{FullCookie: rawToken}
+	s.leoSessions[key] = session
+	return session
 }
 
 // HandleTokenDelete handles DELETE /api/v1/tokens/{id}.
@@ -694,7 +747,7 @@ func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Reques
 	tokenValue, _ := tokenInfo["value"].(string)
 
 	if platform == "leonardo" && s.LeonardoClient != nil {
-		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+		session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
 		if err != nil {
 			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
 				"ok": false, "detail": "Leonardo积分刷新失败: " + err.Error(),
@@ -741,7 +794,7 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	tokenValue, _ := tokenInfo["value"].(string)
 
 	if platform == "leonardo" && s.LeonardoClient != nil {
-		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+		session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
 		if err != nil {
 			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
 				"ok": false, "detail": "Token刷新失败: " + err.Error(),
@@ -1224,7 +1277,7 @@ func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSess
 	if tokenID == "" || session == nil {
 		return
 	}
-	_, credits, err := s.LeonardoClient.ValidateToken(session.FullCookie)
+	credits, err := s.LeonardoClient.QueryCredits(session)
 	if err != nil {
 		log.Printf("[poll] failed to refresh credits for token %s: %v", tokenID, err)
 		return
@@ -1248,11 +1301,11 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 		if rawToken == "" {
 			return nil, ""
 		}
-		session := &leonardo.TokenSession{
-			FullCookie: rawToken,
+		session := s.getOrCreateLeonardoSession(tokenID, rawToken)
+		if session == nil {
+			return nil, ""
 		}
-		// Try to refresh/initialize session
-		if err := s.LeonardoClient.RefreshSession(session); err != nil {
+		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
 			return nil, ""
 		}
 		return session, tokenID
@@ -1268,13 +1321,14 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 			if rawToken == "" {
 				continue
 			}
-			session := &leonardo.TokenSession{
-				FullCookie: rawToken,
-			}
-			if err := s.LeonardoClient.RefreshSession(session); err != nil {
+			foundID, _ := t["id"].(string)
+			session := s.getOrCreateLeonardoSession(foundID, rawToken)
+			if session == nil {
 				continue
 			}
-			foundID, _ := t["id"].(string)
+			if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+				continue
+			}
 			return session, foundID
 		}
 	}
