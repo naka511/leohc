@@ -434,15 +434,28 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 		}
 	}
 
+	if videoURL := strings.TrimSpace(toString(data["video_url"])); videoURL != "" {
+		videoID, err := s.resolveLeonardoVideoID(session, "", videoURL, uploadCache)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("invalid video_url: %w", err)
+		}
+		videoRefs = append(videoRefs, leonardo.VideoRef{
+			ID:   videoID,
+			Type: "UPLOADED",
+		})
+	}
+
 	if rawVideos, ok := data["video_reference"].([]interface{}); ok {
 		for idx, item := range rawVideos {
 			entry, _ := item.(map[string]interface{})
-			videoID := strings.TrimSpace(toString(entry["id"]))
-			if videoID == "" {
-				return nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: id is required", idx)
+			rawID := toString(entry["id"])
+			rawURL := toString(entry["url"])
+			videoID, err := s.resolveLeonardoVideoID(session, rawID, rawURL, uploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: %w", idx, err)
 			}
 			refType := strings.TrimSpace(toString(entry["type"]))
-			if refType == "" {
+			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
 				refType = "UPLOADED"
 			}
 			videoRef := leonardo.VideoRef{

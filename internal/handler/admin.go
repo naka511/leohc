@@ -910,6 +910,7 @@ var startTime = time.Now()
 
 const (
 	maxRemoteImageBytes     = 20 << 20
+	maxRemoteVideoBytes     = 100 << 20
 	remoteImageFetchTimeout = 120 * time.Second
 	initImageLookupTimeout  = 180 * time.Second
 )
@@ -971,6 +972,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			Type string `json:"type"`
 		} `json:"end_frame,omitempty"`
 		VideoReference []struct {
+			URL      string  `json:"url"`
 			ID       string  `json:"id"`
 			Type     string  `json:"type"`
 			Duration float64 `json:"duration"`
@@ -1048,11 +1050,21 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Build video refs
+	videoUploadCache := make(map[string]string)
 	var videoRefs []leonardo.VideoRef
 	for _, vr := range body.VideoReference {
+		videoID, err := s.resolveLeonardoVideoID(session, vr.ID, vr.URL, videoUploadCache)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid video_reference entry: %v", err)})
+			return
+		}
+		refType := strings.TrimSpace(vr.Type)
+		if refType == "" || (strings.TrimSpace(vr.ID) == "" && strings.TrimSpace(vr.URL) != "") {
+			refType = "UPLOADED"
+		}
 		videoRefs = append(videoRefs, leonardo.VideoRef{
-			ID:       vr.ID,
-			Type:     vr.Type,
+			ID:       videoID,
+			Type:     refType,
 			Duration: vr.Duration,
 		})
 	}
@@ -1307,12 +1319,46 @@ func (s *Server) resolveLeonardoImageID(session *leonardo.TokenSession, id, remo
 	return uploadedID, nil
 }
 
+func (s *Server) resolveLeonardoVideoID(session *leonardo.TokenSession, id, remoteURL string, cache map[string]string) (string, error) {
+	videoID := strings.TrimSpace(id)
+	if videoID != "" {
+		return videoID, nil
+	}
+
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		return "", fmt.Errorf("either id or url is required")
+	}
+	if cache != nil {
+		if cachedID, ok := cache[remoteURL]; ok && cachedID != "" {
+			return cachedID, nil
+		}
+	}
+
+	uploadedID, err := s.uploadLeonardoVideoFromURL(session, remoteURL)
+	if err != nil {
+		return "", err
+	}
+	if cache != nil {
+		cache[remoteURL] = uploadedID
+	}
+	return uploadedID, nil
+}
+
 func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
 	imageData, contentType, ext, err := s.downloadRemoteImage(remoteURL)
 	if err != nil {
 		return "", err
 	}
 	return s.uploadLeonardoImageBytes(session, imageData, ext, contentType)
+}
+
+func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
+	videoData, contentType, ext, err := s.downloadRemoteVideo(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	return s.uploadLeonardoVideoBytes(session, videoData, ext, contentType)
 }
 
 func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageData []byte, ext, contentType string) (string, error) {
@@ -1328,6 +1374,17 @@ func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageD
 		return "", fmt.Errorf("wait for init image failed: %w", err)
 	}
 	return imageID, nil
+}
+
+func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoData []byte, ext, contentType string) (string, error) {
+	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+	if err != nil {
+		return "", fmt.Errorf("upload init failed: %w", err)
+	}
+	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, videoData, contentType); err != nil {
+		return "", fmt.Errorf("s3 upload failed: %w", err)
+	}
+	return initResult.UploadID, nil
 }
 
 func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {
@@ -1397,6 +1454,73 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 	return imageData, contentType, ext, nil
 }
 
+func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("invalid video url: %w", err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return nil, "", "", fmt.Errorf("video url must use http or https")
+	}
+	if parsedURL.RawPath == "" {
+		parsedURL.RawPath = parsedURL.EscapedPath()
+	}
+
+	httpClient, err := s.newResourceHTTPClient(remoteImageFetchTimeout)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	req, err := http.NewRequest("GET", parsedURL.String(), nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	req.Header.Set("User-Agent", "leo-go-video-fetch/1.0")
+	req.Header.Set("Accept", "video/*,*/*;q=0.8")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("fetch video url failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", "", fmt.Errorf("video url returned %d", resp.StatusCode)
+	}
+
+	videoData, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteVideoBytes+1))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("read video url failed: %w", err)
+	}
+	if len(videoData) == 0 {
+		return nil, "", "", fmt.Errorf("video url returned empty body")
+	}
+	if len(videoData) > maxRemoteVideoBytes {
+		return nil, "", "", fmt.Errorf("video url exceeds %d MB limit", maxRemoteVideoBytes>>20)
+	}
+
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+		contentType = mediaType
+	}
+	if contentType == "" || !strings.HasPrefix(contentType, "video/") {
+		contentType = http.DetectContentType(videoData)
+	}
+	if !strings.HasPrefix(contentType, "video/") {
+		return nil, "", "", fmt.Errorf("video url did not return a video content type")
+	}
+
+	ext := videoExtFromContentType(contentType)
+	if ext == "" {
+		ext = videoExtFromURL(parsedURL.Path)
+	}
+	if ext == "" {
+		ext = "mp4"
+	}
+
+	return videoData, contentType, ext, nil
+}
+
 func (s *Server) newResourceHTTPClient(timeout time.Duration) (*http.Client, error) {
 	transport := &http.Transport{}
 
@@ -1450,6 +1574,31 @@ func imageExtFromURL(rawPath string) string {
 		if ext == "tif" {
 			return "tiff"
 		}
+		return ext
+	default:
+		return ""
+	}
+}
+
+func videoExtFromContentType(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "video/mp4":
+		return "mp4"
+	case "video/quicktime":
+		return "mov"
+	case "video/webm":
+		return "webm"
+	case "video/x-msvideo":
+		return "avi"
+	default:
+		return ""
+	}
+}
+
+func videoExtFromURL(rawPath string) string {
+	ext := strings.TrimPrefix(strings.ToLower(pathpkg.Ext(rawPath)), ".")
+	switch ext {
+	case "mp4", "mov", "webm", "avi", "m4v":
 		return ext
 	default:
 		return ""
