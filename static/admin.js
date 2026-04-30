@@ -106,7 +106,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let latestTokenPagination = null;
   let activeTaskTracker = null;
   const TOKEN_PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000];
-  const TOKEN_PAGE_SIZE_STORAGE_KEY = "adobe2api.tokenPageSize";
+  const TOKEN_PAGE_SIZE_STORAGE_KEY = "leo-go.tokenPageSize";
   function readTokenPageSize() {
     try {
       const stored = Number(localStorage.getItem(TOKEN_PAGE_SIZE_STORAGE_KEY) || 50);
