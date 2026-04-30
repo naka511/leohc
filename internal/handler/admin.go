@@ -1330,6 +1330,9 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return nil, "", "", fmt.Errorf("image url must use http or https")
 	}
+	if parsedURL.RawPath == "" {
+		parsedURL.RawPath = parsedURL.EscapedPath()
+	}
 
 	httpClient, err := s.newResourceHTTPClient(30 * time.Second)
 	if err != nil {

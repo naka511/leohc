@@ -1005,7 +1005,7 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 		OperationName: "UploadInitImage",
 		Variables: map[string]interface{}{
 			"arg1": map[string]interface{}{
-				"fileType": ext,
+				"extension": ext,
 			},
 		},
 		Query: uploadInitMutation,
