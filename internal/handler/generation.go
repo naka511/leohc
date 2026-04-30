@@ -332,13 +332,33 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	var startFrames []leonardo.FrameRef
 	var endFrames []leonardo.FrameRef
 	var videoRefs []leonardo.VideoRef
+	hasVideoInput := strings.TrimSpace(toString(data["video_url"])) != ""
+	if !hasVideoInput {
+		if rawVideos, ok := data["video_reference"].([]interface{}); ok {
+			for _, item := range rawVideos {
+				entry, _ := item.(map[string]interface{})
+				if strings.TrimSpace(toString(entry["id"])) != "" || strings.TrimSpace(toString(entry["url"])) != "" {
+					hasVideoInput = true
+					break
+				}
+			}
+		}
+	}
 
 	if imageURL := strings.TrimSpace(toString(data["image_url"])); imageURL != "" {
 		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("invalid image_url: %w", err)
 		}
-		startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
+		if hasVideoInput {
+			imageRefs = append(imageRefs, leonardo.ImageRef{
+				ID:       imageID,
+				Type:     "UPLOADED",
+				Strength: "MID",
+			})
+		} else {
+			startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
+		}
 	}
 
 	if imageURL := strings.TrimSpace(toString(data["start_image_url"])); imageURL != "" {
