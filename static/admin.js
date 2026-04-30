@@ -2238,10 +2238,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const dt = new Date((item.ts || 0) * 1000);
     const dateText = dt.toLocaleDateString();
     const timeText = dt.toLocaleTimeString();
-    const t = Number(item.duration_sec || 0);
+    const rawDuration = Number(item.duration_sec || 0);
     const status = Number(item.status_code || 0);
     const taskStatus = forceInProgress ? "IN_PROGRESS" : String(item.task_status || "").toUpperCase();
     const previewUrl = normalizePreviewUrl(String(item.preview_url || "").trim());
+    const errorDetail = String(item.error_message || item.error_code || "").trim();
     const failedTaskStatuses = new Set(["FAILED", "ERROR", "CANCELLED"]);
     const generationOperations = new Set(["api.generate", "chat.completions", "images.generations"]);
     const generationPaths = new Set(["/api/v1/generate", "/v1/chat/completions", "/v1/images/generations"]);
@@ -2266,11 +2267,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       : (isFailed
         ? `<span class="icon-error" aria-hidden="true">!</span>`
         : `<span class="icon-check" aria-hidden="true">✓</span>`);
-    const errCode = String(item.error_code || "").trim();
-    const failedStatusText = status >= 400 ? String(status) : stateLabel;
-    const failedStateContent = errCode
-      ? `<button class="log-state log-state-btn failed" data-error-code="${escapeHtml(errCode)}" type="button">${stateIcon}<span>${escapeHtml(failedStatusText)}</span></button>`
-      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(failedStatusText)}</span></span>`;
+    const failedStatusCode = status >= 400 ? String(status) : "";
+    const failedStateContent = errorDetail
+      ? `<button class="log-state log-state-btn failed log-state-stacked" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button">${stateIcon}<span class="log-state-stack"><span>${escapeHtml(stateLabel)}</span>${failedStatusCode ? `<small>${escapeHtml(failedStatusCode)}</small>` : ""}</span></button>`
+      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(stateLabel)}</span></span>`;
     const stateContent = isFailed ? failedStateContent : `${stateIcon}<span>${stateLabel}</span>`;
     const statusCell = isFailed ? stateContent : `<span class="log-state ${stateClass}">${stateContent}</span>`;
     const taskProgressRaw = Number(item.task_progress);
@@ -2299,6 +2299,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const modelParamsText = String(item.model_params || "").trim();
     const promptText = String(item.prompt_preview || "").trim();
     const promptSummary = buildPromptSummary(promptText);
+    const durationText = formatLogDuration(rawDuration, isRunning, Number(item.ts || 0));
     const tokenCell = `<div class="log-account-cell">${accountParts.join("<br>")}</div>`;
     const previewCell = previewUrl
       ? `<button class="small preview-btn" data-url="${encodeURIComponent(previewUrl)}" data-kind="${previewKind || ""}">查看</button>`
@@ -2313,7 +2314,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     tr.innerHTML = `
       <td class="log-time-cell"><span class="date">${dateText}</span><span class="time">${timeText}</span></td>
       <td>${statusCell}</td>
-      <td style="color:#a8bfd8;">${t}</td>
+      <td style="color:#a8bfd8;">${escapeHtml(durationText)}</td>
       <td>${progressCell}</td>
       <td title="${tokenTitle}">${tokenCell}</td>
       <td title="${modelTitle || escapeHtml(modelText)}">${modelCell}</td>
@@ -2322,6 +2323,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     `;
     if (isRunning) tr.classList.add("log-row-running");
     return tr;
+  }
+
+  function formatLogDuration(seconds, isRunning = false, timestampSec = 0) {
+    let value = Number(seconds || 0);
+    if (isRunning && Number.isFinite(timestampSec) && timestampSec > 0) {
+      value = Math.max(value, (Date.now() / 1000) - timestampSec);
+    }
+    if (!Number.isFinite(value) || value <= 0) return "0";
+    if (value < 10) return value.toFixed(1).replace(/\.0$/, "");
+    return String(Math.round(value));
   }
 
   function renderLogs(logs, runningItems = []) {
@@ -2415,25 +2426,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     promptDetailContent.textContent = "";
   }
 
-  async function openErrorDetailByCode(code) {
-    const errCode = String(code || "").trim();
-    if (!errCode || !errorDetailModal || !errorDetailCode || !errorDetailContent) return;
-    errorDetailCode.textContent = "错误信息";
-    errorDetailContent.innerHTML = `<pre>加载中...</pre>`;
+  function openErrorDetail(detail, statusCode = "") {
+    const message = String(detail || "").trim();
+    if (!message || !errorDetailModal || !errorDetailCode || !errorDetailContent) return;
+    const numericCode = String(statusCode || "").trim();
+    errorDetailCode.textContent = numericCode ? `错误 ${numericCode}` : "错误信息";
+    errorDetailContent.innerHTML = `<pre>${escapeHtml(message)}</pre>`;
     errorDetailModal.classList.add("open");
     errorDetailModal.setAttribute("aria-hidden", "false");
-    try {
-      const res = await fetch(`/api/v1/logs/errors/${encodeURIComponent(errCode)}`);
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `获取错误详情失败 (${res.status})`);
-      }
-      const data = await res.json();
-      const message = String(data?.message || "").trim() || "暂无错误信息";
-      errorDetailContent.innerHTML = `<pre>${escapeHtml(message)}</pre>`;
-    } catch (err) {
-      errorDetailContent.innerHTML = `<pre>${escapeHtml(err.message || "获取错误详情失败")}</pre>`;
-    }
   }
 
   function buildDownloadFilename(url, kind) {
@@ -2488,11 +2488,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         openPreview(decodeURIComponent(encodedUrl), kind);
         return;
       }
-      const clickableErrorEl = target.closest("[data-error-code]");
+      const clickableErrorEl = target.closest("[data-error-detail]");
       if (clickableErrorEl instanceof HTMLElement) {
-        const code = String(clickableErrorEl.getAttribute("data-error-code") || "").trim();
-        if (!code) return;
-        openErrorDetailByCode(code);
+        const detail = String(clickableErrorEl.getAttribute("data-error-detail") || "").trim();
+        const statusCode = String(clickableErrorEl.getAttribute("data-error-status") || "").trim();
+        if (!detail) return;
+        openErrorDetail(decodeURIComponent(detail), statusCode);
       }
     });
   }

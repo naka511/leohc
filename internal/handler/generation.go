@@ -148,12 +148,14 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 
 	session, usedTokenID := s.getLeonardoSession("")
 	if session == nil {
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 503, "No Leonardo tokens available")
 		writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
 		return
 	}
 
 	imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
 	if err != nil {
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 400, err.Error())
 		writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
 		return
 	}
@@ -191,6 +193,51 @@ func errorResp(message, errType string) map[string]interface{} {
 	return map[string]interface{}{
 		"error": map[string]interface{}{"message": message, "type": errType},
 	}
+}
+
+func (s *Server) resolveReqLogAccount(tokenID string, session *leonardo.TokenSession) (string, string) {
+	accountName := ""
+	accountEmail := ""
+
+	if tokenID != "" && s.TokenMgr != nil {
+		if info := s.TokenMgr.GetByID(tokenID); info != nil {
+			accountName = strings.TrimSpace(toString(info["account_name"]))
+			accountEmail = strings.TrimSpace(toString(info["account_email"]))
+			if accountEmail == "" {
+				accountEmail = strings.TrimSpace(toString(info["refresh_profile_email"]))
+			}
+			if accountName == "" {
+				accountName = strings.TrimSpace(toString(info["refresh_profile_name"]))
+			}
+		}
+	}
+
+	if accountEmail == "" && session != nil {
+		accountEmail = strings.TrimSpace(session.Email)
+	}
+
+	return accountName, accountEmail
+}
+
+func (s *Server) logVideoRequestFailure(operation, prompt, modelID string, duration, width, height int, tokenID string, session *leonardo.TokenSession, statusCode int, errorMessage string) {
+	if s.ReqLog == nil {
+		return
+	}
+	accountName, accountEmail := s.resolveReqLogAccount(tokenID, session)
+	s.ReqLog.Add(reqlog.Entry{
+		ID:           fmt.Sprintf("log-%d", time.Now().UnixNano()),
+		StatusCode:   statusCode,
+		TaskStatus:   "FAILED",
+		Type:         "video",
+		TokenID:      tokenID,
+		AccountName:  accountName,
+		AccountEmail: accountEmail,
+		Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
+		Prompt:       prompt,
+		ErrorCode:    strconv.Itoa(statusCode),
+		ErrorMessage: errorMessage,
+		Operation:    operation,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -261,16 +308,21 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 	result, err := s.LeonardoClient.Generate(session, genReq)
 	if err != nil {
 		s.TokenMgr.ReportInvalid(usedTokenID)
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 502, fmt.Sprintf("generation failed: %v", err))
 		writeJSON(w, 500, errorResp(fmt.Sprintf("generation failed: %v", err), "server_error"))
 		return
 	}
 
 	if s.ReqLog != nil {
+		accountName, accountEmail := s.resolveReqLogAccount(usedTokenID, session)
 		s.ReqLog.Add(reqlog.Entry{
 			Timestamp:    float64(startTime.Unix()),
 			StatusCode:   200,
 			TaskStatus:   "IN_PROGRESS",
 			Type:         "video",
+			TokenID:      usedTokenID,
+			AccountName:  accountName,
+			AccountEmail: accountEmail,
 			Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
 			Prompt:       prompt,
 			GenerationID: result.GenerationID,
@@ -287,9 +339,11 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 		if err != nil {
 			continue
 		}
+		elapsed := time.Since(startTime).Seconds()
 		if status.Status == "FAILED" {
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", "", "")
+				s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
+				s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 			}
 			writeJSON(w, 500, errorResp("Generation failed in Leonardo", "server_error"))
 			return
@@ -306,7 +360,8 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 				}
 				if url != "" {
 					if s.ReqLog != nil {
-						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETED", url, "")
+						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, url, "video", "")
+						s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 					}
 					s.TokenMgr.ReportSuccess(usedTokenID)
 					writeJSON(w, 200, map[string]interface{}{
@@ -320,7 +375,8 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if s.ReqLog != nil {
-		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", "", "Timeout")
+		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 504, "", "", "Generation timed out")
+		s.ReqLog.UpdateDuration(result.GenerationID, time.Since(startTime).Seconds())
 	}
 	writeJSON(w, 504, errorResp("Generation timed out", "timeout"))
 }

@@ -746,6 +746,7 @@ func (s *Server) HandleFailedAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
+		"items":    accounts,
 		"accounts": accounts,
 		"total":    len(accounts),
 	})
@@ -1095,20 +1096,25 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	startTime := time.Now()
 	result, err := s.LeonardoClient.Generate(session, genReq)
 	elapsedSec := time.Since(startTime).Seconds()
+	accountName, accountEmail := s.resolveReqLogAccount(usedTokenID, session)
 
 	if err != nil {
 		// Log failed request
 		if s.ReqLog != nil {
 			s.ReqLog.Add(reqlog.Entry{
-				ID:          fmt.Sprintf("leo-%d", time.Now().UnixNano()),
-				StatusCode:  500,
-				TaskStatus:  "FAILED",
-				Type:        "video",
-				DurationSec: int(elapsedSec),
-				Model:       fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
-				Prompt:      body.Prompt,
-				ErrorCode:   err.Error(),
-				Operation:   "leonardo.generate",
+				ID:           fmt.Sprintf("leo-%d", time.Now().UnixNano()),
+				StatusCode:   502,
+				TaskStatus:   "FAILED",
+				Type:         "video",
+				DurationSec:  elapsedSec,
+				TokenID:      usedTokenID,
+				AccountName:  accountName,
+				AccountEmail: accountEmail,
+				Model:        fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
+				Prompt:       body.Prompt,
+				ErrorCode:    "502",
+				ErrorMessage: fmt.Sprintf("generation failed: %v", err),
+				Operation:    "leonardo.generate",
 			})
 		}
 		writeJSON(w, 500, map[string]interface{}{
@@ -1124,7 +1130,10 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			StatusCode:   200,
 			TaskStatus:   "IN_PROGRESS",
 			Type:         "video",
-			DurationSec:  int(elapsedSec),
+			DurationSec:  elapsedSec,
+			TokenID:      usedTokenID,
+			AccountName:  accountName,
+			AccountEmail: accountEmail,
 			Model:        fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
 			Prompt:       body.Prompt,
 			GenerationID: result.GenerationID,
@@ -1134,7 +1143,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Background polling goroutine to auto-update log status
-	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID)
+	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID, startTime)
 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":            true,
@@ -1215,12 +1224,12 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 					previewURL = firstThumb
 					previewKind = "image"
 				}
-				s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", previewURL, previewKind)
+				s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", 200, previewURL, previewKind, "")
 			}
 		}
 	} else if status.Status == "FAILED" {
 		if s.ReqLog != nil {
-			s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+			s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
 		}
 	}
 
@@ -1606,14 +1615,17 @@ func videoExtFromURL(rawPath string) string {
 }
 
 // pollGenerationStatus runs in a goroutine to auto-update log status.
-func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID string, tokenID string) {
+func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID string, tokenID string, startedAt time.Time) {
 	const (
 		pollInterval = 10 * time.Second
 		maxDuration  = 10 * time.Minute
 	)
 
 	deadline := time.Now().Add(maxDuration)
-	startTime := time.Now()
+	startTime := startedAt
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
 
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
@@ -1646,12 +1658,12 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 					}
 				}
 				if s.ReqLog != nil {
-					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", previewURL, previewKind)
+					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", 200, previewURL, previewKind, "")
 					s.ReqLog.UpdateDuration(genID, elapsed)
 				}
 			} else {
 				if s.ReqLog != nil {
-					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", "", "")
+					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", 200, "", "", "")
 					s.ReqLog.UpdateDuration(genID, elapsed)
 				}
 			}
@@ -1662,7 +1674,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 		case "FAILED":
 			log.Printf("[poll] generation %s failed (%.1fs)", genID, elapsed)
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
 				s.ReqLog.UpdateDuration(genID, elapsed)
 			}
 			return
@@ -1673,7 +1685,8 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 	// Timeout
 	log.Printf("[poll] generation %s timed out after %v", genID, maxDuration)
 	if s.ReqLog != nil {
-		s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+		s.ReqLog.UpdateByGenerationID(genID, "FAILED", 504, "", "", "Generation polling timed out")
+		s.ReqLog.UpdateDuration(genID, time.Since(startTime).Seconds())
 	}
 }
 

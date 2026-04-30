@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,14 +15,16 @@ type Entry struct {
 	ID           string  `json:"id"`
 	Timestamp    float64 `json:"ts"`
 	StatusCode   int     `json:"status_code"`
-	TaskStatus   string  `json:"task_status"`       // "IN_PROGRESS", "COMPLETE", "FAILED"
-	Type         string  `json:"type"`              // "image", "video"
-	DurationSec  int     `json:"duration_sec"`
+	TaskStatus   string  `json:"task_status"` // "IN_PROGRESS", "COMPLETE", "FAILED"
+	Type         string  `json:"type"`        // "image", "video"
+	DurationSec  float64 `json:"duration_sec"`
+	TokenID      string  `json:"token_id,omitempty"`
 	AccountName  string  `json:"token_account_name"`
 	AccountEmail string  `json:"token_account_email"`
 	Model        string  `json:"model"`
 	Prompt       string  `json:"prompt_preview"`
 	ErrorCode    string  `json:"error_code,omitempty"`
+	ErrorMessage string  `json:"error_message,omitempty"`
 	GenerationID string  `json:"generation_id,omitempty"`
 	PreviewURL   string  `json:"preview_url,omitempty"`
 	PreviewKind  string  `json:"preview_kind,omitempty"`
@@ -62,6 +66,13 @@ func (s *Store) loadFromDisk() {
 		log.Printf("[reqlog] failed to parse %s: %v", s.filePath, err)
 		return
 	}
+	for i := range entries {
+		entries[i].TaskStatus = normalizeTaskStatus(entries[i].TaskStatus)
+		entries[i].DurationSec = normalizeDuration(entries[i].DurationSec)
+		if entries[i].ErrorMessage == "" && entries[i].ErrorCode != "" && !isNumericErrorCode(entries[i].ErrorCode) {
+			entries[i].ErrorMessage = entries[i].ErrorCode
+		}
+	}
 	s.entries = entries
 	log.Printf("[reqlog] loaded %d log entries from %s", len(entries), s.filePath)
 }
@@ -90,6 +101,11 @@ func (s *Store) Add(entry Entry) {
 	if entry.Timestamp == 0 {
 		entry.Timestamp = float64(time.Now().Unix())
 	}
+	entry.TaskStatus = normalizeTaskStatus(entry.TaskStatus)
+	entry.DurationSec = normalizeDuration(entry.DurationSec)
+	if entry.ErrorMessage == "" && entry.ErrorCode != "" && !isNumericErrorCode(entry.ErrorCode) {
+		entry.ErrorMessage = entry.ErrorCode
+	}
 
 	// Prepend
 	s.entries = append([]Entry{entry}, s.entries...)
@@ -98,19 +114,31 @@ func (s *Store) Add(entry Entry) {
 }
 
 // UpdateByGenerationID updates an entry matching the generation ID.
-func (s *Store) UpdateByGenerationID(genID string, taskStatus string, previewURL string, previewKind string) bool {
+func (s *Store) UpdateByGenerationID(genID string, taskStatus string, statusCode int, previewURL string, previewKind string, errorMessage string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for i := range s.entries {
 		if s.entries[i].GenerationID == genID {
-			s.entries[i].TaskStatus = taskStatus
-			s.entries[i].StatusCode = 200
+			s.entries[i].TaskStatus = normalizeTaskStatus(taskStatus)
+			if statusCode > 0 {
+				s.entries[i].StatusCode = statusCode
+				if statusCode >= 400 {
+					s.entries[i].ErrorCode = strconv.Itoa(statusCode)
+				}
+			}
 			if previewURL != "" {
 				s.entries[i].PreviewURL = previewURL
 			}
 			if previewKind != "" {
 				s.entries[i].PreviewKind = previewKind
+			}
+			if errorMessage != "" {
+				s.entries[i].ErrorMessage = errorMessage
+			}
+			if s.entries[i].DurationSec <= 0 && s.entries[i].Timestamp > 0 && s.entries[i].TaskStatus != "IN_PROGRESS" {
+				elapsed := time.Since(time.Unix(int64(s.entries[i].Timestamp), 0)).Seconds()
+				s.entries[i].DurationSec = normalizeDuration(elapsed)
 			}
 			s.saveToDisk()
 			return true
@@ -126,7 +154,7 @@ func (s *Store) UpdateDuration(genID string, durationSec float64) {
 
 	for i := range s.entries {
 		if s.entries[i].GenerationID == genID {
-			s.entries[i].DurationSec = int(durationSec)
+			s.entries[i].DurationSec = normalizeDuration(durationSec)
 			s.saveToDisk()
 			return
 		}
@@ -141,13 +169,13 @@ func (s *Store) List(page, pageSize int, failedOnly bool, accountFilter string) 
 	// Filter — exclude IN_PROGRESS items (they are shown via Running())
 	var filtered []Entry
 	for _, e := range s.entries {
-		if e.TaskStatus == "IN_PROGRESS" {
+		if normalizeTaskStatus(e.TaskStatus) == "IN_PROGRESS" {
 			continue
 		}
-		if failedOnly && e.TaskStatus != "FAILED" {
+		if failedOnly && normalizeTaskStatus(e.TaskStatus) != "FAILED" {
 			continue
 		}
-		if accountFilter != "" && e.AccountName != accountFilter && e.AccountEmail != accountFilter {
+		if accountFilter != "" && e.AccountName != accountFilter && e.AccountEmail != accountFilter && e.TokenID != accountFilter {
 			continue
 		}
 		filtered = append(filtered, e)
@@ -187,7 +215,7 @@ func (s *Store) Running() []Entry {
 
 	var result []Entry
 	for _, e := range s.entries {
-		if e.TaskStatus == "IN_PROGRESS" {
+		if normalizeTaskStatus(e.TaskStatus) == "IN_PROGRESS" {
 			result = append(result, e)
 		}
 	}
@@ -221,16 +249,17 @@ func (s *Store) Stats(rangeStr string) map[string]interface{} {
 			continue
 		}
 		total++
-		if e.TaskStatus == "FAILED" {
+		taskStatus := normalizeTaskStatus(e.TaskStatus)
+		if taskStatus == "FAILED" {
 			failed++
 		}
 		switch e.Type {
 		case "image":
-			if e.TaskStatus == "COMPLETE" {
+			if taskStatus == "COMPLETE" {
 				images++
 			}
 		case "video":
-			if e.TaskStatus == "COMPLETE" {
+			if taskStatus == "COMPLETE" {
 				videos++
 			}
 		}
@@ -251,18 +280,50 @@ func (s *Store) FailedAccounts() []map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	counts := make(map[string]int)
+	type failedAccount struct {
+		AccountKey   string
+		AccountName  string
+		AccountEmail string
+		TokenID      string
+		FailCount    int
+	}
+
+	counts := make(map[string]*failedAccount)
 	for _, e := range s.entries {
-		if e.TaskStatus == "FAILED" && e.AccountName != "" {
-			counts[e.AccountName]++
+		if normalizeTaskStatus(e.TaskStatus) != "FAILED" {
+			continue
 		}
+		key := strings.TrimSpace(e.AccountEmail)
+		if key == "" {
+			key = strings.TrimSpace(e.AccountName)
+		}
+		if key == "" {
+			key = strings.TrimSpace(e.TokenID)
+		}
+		if key == "" {
+			continue
+		}
+		item := counts[key]
+		if item == nil {
+			item = &failedAccount{
+				AccountKey:   key,
+				AccountName:  strings.TrimSpace(e.AccountName),
+				AccountEmail: strings.TrimSpace(e.AccountEmail),
+				TokenID:      strings.TrimSpace(e.TokenID),
+			}
+			counts[key] = item
+		}
+		item.FailCount++
 	}
 
 	var result []map[string]interface{}
-	for name, cnt := range counts {
+	for _, item := range counts {
 		result = append(result, map[string]interface{}{
-			"account_name": name,
-			"fail_count":   cnt,
+			"account_key":         item.AccountKey,
+			"token_account_name":  item.AccountName,
+			"token_account_email": item.AccountEmail,
+			"token_id":            item.TokenID,
+			"failed_count":        item.FailCount,
 		})
 	}
 	return result
@@ -277,4 +338,34 @@ func (s *Store) Clear() int {
 	s.entries = s.entries[:0]
 	s.saveToDisk()
 	return n
+}
+
+func normalizeTaskStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "COMPLETED":
+		return "COMPLETE"
+	case "":
+		return "IN_PROGRESS"
+	default:
+		return strings.ToUpper(strings.TrimSpace(status))
+	}
+}
+
+func normalizeDuration(durationSec float64) float64 {
+	if durationSec <= 0 {
+		return 0
+	}
+	if durationSec < 0.1 {
+		return 0.1
+	}
+	return float64(int(durationSec*10+0.5)) / 10
+}
+
+func isNumericErrorCode(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	_, err := strconv.Atoi(value)
+	return err == nil
 }
