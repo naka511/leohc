@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>adobe2api studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-orb bg-orb-a"></div>
+  <div class="bg-orb bg-orb-b"></div>
+
+  <main class="shell">
+    <section class="hero card">
+      <p class="kicker">Adobe2API Playground</p>
+      <h1>Turn Firefly generation into a clean API flow.</h1>
+      <p class="muted">Submit prompts, track render progress, and preview the final image from one lightweight dashboard.</p>
+    </section>
+
+    <section class="panel-grid">
+      <article class="card form-card">
+        <h2>Create</h2>
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" placeholder="A cinematic mountain sunrise above clouds, ultra wide, soft rim light"></textarea>
+
+        <label for="ratio">Aspect Ratio</label>
+        <select id="ratio">
+          <option value="16:9">16:9</option>
+          <option value="1:1">1:1</option>
+          <option value="9:16">9:16</option>
+          <option value="4:3">4:3</option>
+          <option value="3:4">3:4</option>
+        </select>
+
+        <button id="runBtn">Generate Image</button>
+        <p id="msg" class="muted small"></p>
+      </article>
+
+      <article class="card result-card">
+        <div class="result-head">
+          <h2>Result</h2>
+          <span id="stateBadge" class="badge idle">idle</span>
+        </div>
+
+        <div class="progress-wrap">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <p id="progressText" class="mono">progress: 0%</p>
+
+        <div class="preview" id="previewWrap">
+          <p class="muted">No image yet</p>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

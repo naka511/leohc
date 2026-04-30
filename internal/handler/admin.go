@@ -1,0 +1,1238 @@
+package handler
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"leo-go/internal/provider/leonardo"
+	"leo-go/internal/reqlog"
+)
+
+// HandleAuthLogin handles POST /api/v1/auth/login.
+func (s *Server) HandleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	expectedUser := s.Config.GetString("admin_username", "admin")
+	expectedPass := s.Config.GetString("admin_password", "admin")
+	if body.Username != expectedUser || body.Password != expectedPass {
+		writeJSON(w, 401, map[string]string{"detail": "invalid credentials"})
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_session",
+		Value:    s.Config.GetString("admin_session_secret", "leo-go-session"),
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+	})
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "login successful"})
+}
+
+// HandleAuthMe handles GET /api/v1/auth/me.
+func (s *Server) HandleAuthMe(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":       true,
+		"username": s.Config.GetString("admin_username", "admin"),
+	})
+}
+
+func (s *Server) requireAdmin(r *http.Request) error {
+	cookie, err := r.Cookie("admin_session")
+	if err != nil || cookie.Value != s.Config.GetString("admin_session_secret", "leo-go-session") {
+		return fmt.Errorf("unauthorized")
+	}
+	return nil
+}
+
+// HandleTokenList handles GET /api/v1/tokens — paginated with summary.
+func (s *Server) HandleTokenList(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	allTokens := s.TokenMgr.List()
+	if allTokens == nil {
+		allTokens = []map[string]interface{}{}
+	}
+
+	// Parse filters
+	statusFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	creditsFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("credits")))
+
+	// Filter
+	filtered := allTokens
+	if statusFilter != "" {
+		var tmp []map[string]interface{}
+		for _, t := range filtered {
+			ts := strings.ToLower(fmt.Sprintf("%v", t["status"]))
+			if ts == statusFilter {
+				tmp = append(tmp, t)
+			}
+		}
+		filtered = tmp
+	}
+	_ = creditsFilter // Credits filter can be added later
+
+	// Stats from all tokens
+	stats := s.TokenMgr.Stats()
+
+	// Pagination
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+
+	total := len(filtered)
+	totalPages := int(math.Ceil(float64(total) / float64(pageSize)))
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	pageTokens := filtered[start:end]
+	if pageTokens == nil {
+		pageTokens = []map[string]interface{}{}
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"tokens": pageTokens,
+		"summary": map[string]interface{}{
+			"total":    stats["total"],
+			"active":   stats["active"],
+			"filtered": total,
+		},
+		"pagination": map[string]interface{}{
+			"page":        page,
+			"page_size":   pageSize,
+			"total":       total,
+			"total_pages": totalPages,
+		},
+	})
+}
+
+// HandleTokenAdd handles POST /api/v1/tokens.
+func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		Token        string `json:"token"`
+		Platform     string `json:"platform"`
+		TokenType    string `json:"token_type"`
+		AccountName  string `json:"account_name"`
+		AccountEmail string `json:"account_email"`
+		Source       string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		writeJSON(w, 400, map[string]string{"detail": "token is required"})
+		return
+	}
+	platform := body.Platform
+	if platform == "" {
+		platform = "adobe"
+	}
+	tokenType := body.TokenType
+	if tokenType == "" {
+		if platform == "leonardo" {
+			tokenType = "session_token"
+		} else {
+			tokenType = "jwt"
+		}
+	}
+
+	// For Leonardo tokens, save first then try to validate in background
+	if platform == "leonardo" {
+		if body.Source == "" {
+			body.Source = "manual"
+		}
+		info, duplicate, addErr := s.TokenMgr.Add(body.Token, platform, tokenType, body.AccountName, body.AccountEmail, body.Source)
+		if addErr != nil {
+			writeJSON(w, 500, map[string]string{"detail": addErr.Error()})
+			return
+		}
+		// Try validation (best-effort, won't block save)
+		leoInfo := map[string]interface{}{"status": "saved_without_validation"}
+		if s.LeonardoClient != nil {
+			session, credits, err := s.LeonardoClient.ValidateToken(body.Token)
+			if err == nil && session != nil {
+				tokenID, _ := info["id"].(string)
+				if tokenID != "" {
+					s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
+					if credits != nil {
+						s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+						s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
+					}
+				}
+				leoInfo = map[string]interface{}{
+					"status":     "validated",
+					"email":      session.Email,
+					"user_id":    session.HasuraUserID,
+					"plan":       credits.Plan,
+					"credits":    credits.TotalTokens,
+					"jwt_expiry": session.JWTExpiry.Format(time.RFC3339),
+				}
+			} else {
+				leoInfo["error"] = err.Error()
+				leoInfo["hint"] = "Token已保存，请稍后点击「刷新积分」获取账号信息"
+			}
+		}
+		writeJSON(w, 200, map[string]interface{}{
+			"ok": true, "token": info, "duplicate": duplicate,
+			"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate),
+			"leonardo": leoInfo,
+		})
+		return
+	}
+
+	info, duplicate, err := s.TokenMgr.Add(body.Token, platform, tokenType, body.AccountName, body.AccountEmail, body.Source)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"detail": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok": true, "token": info, "duplicate": duplicate,
+		"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate),
+	})
+}
+
+// HandleLeonardoValidate handles POST /api/v1/leonardo/validate.
+func (s *Server) HandleLeonardoValidate(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	session, credits, err := s.LeonardoClient.ValidateToken(body.Token)
+	if err != nil {
+		writeJSON(w, 400, map[string]interface{}{
+			"ok": false, "detail": err.Error(),
+		})
+		return
+	}
+	result := map[string]interface{}{
+		"ok": true,
+		"session": map[string]interface{}{
+			"email":         session.Email,
+			"cognito_sub":   session.CognitoSub,
+			"hasura_user_id": session.HasuraUserID,
+			"jwt_valid":     session.IsJWTValid(),
+			"jwt_remaining": session.GetJWTRemainingSeconds(),
+			"jwt_expiry":    session.JWTExpiry.Format(time.RFC3339),
+		},
+	}
+	if credits != nil {
+		result["credits"] = map[string]interface{}{
+			"paid_tokens":         credits.PaidTokens,
+			"subscription_tokens": credits.SubscriptionTokens,
+			"rollover_tokens":     credits.RolloverTokens,
+			"total_tokens":        credits.TotalTokens,
+			"plan":                credits.Plan,
+			"renewal_date":        credits.TokenRenewalDate,
+		}
+	}
+	writeJSON(w, 200, result)
+}
+
+// HandleLeonardoCredits handles GET /api/v1/leonardo/credits?token_id=xxx.
+func (s *Server) HandleLeonardoCredits(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+	tokenID := r.URL.Query().Get("token_id")
+	if tokenID == "" {
+		writeJSON(w, 400, map[string]string{"detail": "token_id required"})
+		return
+	}
+	tokenInfo := s.TokenMgr.GetByID(tokenID)
+	if tokenInfo == nil {
+		writeJSON(w, 404, map[string]string{"detail": "token not found"})
+		return
+	}
+	tokenValue, _ := tokenInfo["value"].(string)
+	session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+	if err != nil {
+		writeJSON(w, 400, map[string]interface{}{
+			"ok": false, "detail": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":       true,
+		"token_id": tokenID,
+		"email":    session.Email,
+		"plan":     credits.Plan,
+		"credits": map[string]interface{}{
+			"paid_tokens":         credits.PaidTokens,
+			"subscription_tokens": credits.SubscriptionTokens,
+			"rollover_tokens":     credits.RolloverTokens,
+			"total_tokens":        credits.TotalTokens,
+			"renewal_date":        credits.TokenRenewalDate,
+		},
+		"jwt_remaining_seconds": session.GetJWTRemainingSeconds(),
+	})
+}
+
+// HandleTokenBatchAdd handles POST /api/v1/tokens/batch.
+func (s *Server) HandleTokenBatchAdd(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		Tokens []struct {
+			Token        string `json:"token"`
+			Platform     string `json:"platform"`
+			AccountName  string `json:"account_name"`
+			AccountEmail string `json:"account_email"`
+			Source       string `json:"source"`
+		} `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	added, duplicates, failed := 0, 0, 0
+	for _, t := range body.Tokens {
+		platform := t.Platform
+		if platform == "" {
+			platform = "adobe"
+		}
+		tokenType := "jwt"
+		if platform == "leonardo" {
+			tokenType = "session_token"
+		}
+		_, dup, err := s.TokenMgr.Add(t.Token, platform, tokenType, t.AccountName, t.AccountEmail, t.Source)
+		if err != nil {
+			failed++
+			continue
+		}
+		if dup {
+			duplicates++
+		} else {
+			added++
+		}
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok": true, "added": added, "duplicates": duplicates, "failed": failed,
+	})
+}
+
+// HandleTokenDelete handles DELETE /api/v1/tokens/{id}.
+func (s *Server) HandleTokenDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	tokenID := extractPathParam(r.URL.Path, "/api/v1/tokens/")
+	if tokenID == "" {
+		writeJSON(w, 400, map[string]string{"detail": "token id required"})
+		return
+	}
+	if err := s.TokenMgr.Remove(tokenID); err != nil {
+		writeJSON(w, 404, map[string]string{"detail": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": true})
+}
+
+// HandleTokenStatus handles PUT /api/v1/tokens/{id}/status?status=xxx.
+func (s *Server) HandleTokenStatus(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	path := r.URL.Path
+	// Extract token ID from /api/v1/tokens/{id}/status
+	trimmed := strings.TrimPrefix(path, "/api/v1/tokens/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	tokenID := parts[0]
+
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		status = body.Status
+	}
+	if status == "" {
+		writeJSON(w, 400, map[string]string{"detail": "status required"})
+		return
+	}
+	if err := s.TokenMgr.SetStatus(tokenID, status); err != nil {
+		writeJSON(w, 404, map[string]string{"detail": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": true})
+}
+
+// HandleDeleteBatch handles POST /api/v1/tokens/delete-batch.
+func (s *Server) HandleDeleteBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	deleted := 0
+	for _, id := range body.IDs {
+		if s.TokenMgr.Remove(id) == nil {
+			deleted++
+		}
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "deleted": deleted})
+}
+
+// HandleTokenExport handles POST /api/v1/tokens/export.
+func (s *Server) HandleTokenExport(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	tokens := s.TokenMgr.ListFull()
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "tokens": tokens, "count": len(tokens)})
+}
+
+// HandleAdminConfig handles GET/PUT /api/v1/config.
+func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if r.Method == "GET" {
+		all := s.Config.GetAll()
+		// Mask sensitive values
+		if _, ok := all["admin_password"]; ok {
+			all["admin_password"] = "***"
+		}
+		writeJSON(w, 200, all)
+		return
+	}
+	// PUT/POST
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	for k, v := range updates {
+		s.Config.Set(k, v)
+	}
+	if err := s.Config.Save(); err != nil {
+		writeJSON(w, 500, map[string]string{"detail": "failed to save config"})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": true})
+}
+
+// HandleHealth handles GET /health.
+func (s *Server) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	stats := s.TokenMgr.Stats()
+	writeJSON(w, 200, map[string]interface{}{
+		"status":  "ok",
+		"version": "1.0.0-go",
+		"tokens":  stats,
+		"uptime":  time.Since(startTime).String(),
+	})
+}
+
+// HandleAdminStats handles GET /api/v1/stats.
+func (s *Server) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	stats := s.TokenMgr.Stats()
+	stats["uptime"] = time.Since(startTime).String()
+	writeJSON(w, 200, stats)
+}
+
+// HandleLogs handles GET/DELETE /api/v1/logs.
+func (s *Server) HandleLogs(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if r.Method == "DELETE" {
+		cleared := 0
+		if s.ReqLog != nil {
+			cleared = s.ReqLog.Clear()
+		}
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "cleared": cleared})
+		return
+	}
+
+	if s.ReqLog == nil {
+		writeJSON(w, 200, map[string]interface{}{
+			"logs": []interface{}{}, "total": 0, "page": 1, "total_pages": 1,
+		})
+		return
+	}
+
+	page := 1
+	pageSize := 50
+	if p := r.URL.Query().Get("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			page = v
+		}
+	}
+	if ps := r.URL.Query().Get("page_size"); ps != "" {
+		if v, err := strconv.Atoi(ps); err == nil && v > 0 {
+			pageSize = v
+		}
+	}
+	failedOnly := r.URL.Query().Get("failed_only") == "true" || r.URL.Query().Get("failed_only") == "1"
+	account := r.URL.Query().Get("account")
+
+	entries, curPage, totalPages := s.ReqLog.List(page, pageSize, failedOnly, account)
+
+	// Convert to interface slice
+	var logs []interface{}
+	for _, e := range entries {
+		logs = append(logs, e)
+	}
+	if logs == nil {
+		logs = []interface{}{}
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"logs":        logs,
+		"total":       len(logs),
+		"page":        curPage,
+		"total_pages": totalPages,
+	})
+}
+
+// HandleLogsRunning handles GET /api/v1/logs/running.
+func (s *Server) HandleLogsRunning(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var items []interface{}
+	if s.ReqLog != nil {
+		for _, e := range s.ReqLog.Running() {
+			items = append(items, e)
+		}
+	}
+	if items == nil {
+		items = []interface{}{}
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"items": items,
+		"total": len(items),
+	})
+}
+
+// HandleFailedAccounts handles GET /api/v1/logs/failed-accounts.
+func (s *Server) HandleFailedAccounts(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var accounts []interface{}
+	if s.ReqLog != nil {
+		for _, a := range s.ReqLog.FailedAccounts() {
+			accounts = append(accounts, a)
+		}
+	}
+	if accounts == nil {
+		accounts = []interface{}{}
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"accounts": accounts,
+		"total":    len(accounts),
+	})
+}
+
+// HandleLogsStats handles GET /api/v1/logs/stats.
+func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	rangeStr := r.URL.Query().Get("range")
+	if rangeStr == "" {
+		rangeStr = "today"
+	}
+
+	if s.ReqLog == nil {
+		writeJSON(w, 200, map[string]interface{}{
+			"generated_images": 0, "generated_videos": 0,
+			"total_requests": 0, "failed_requests": 0,
+			"end_ts": float64(time.Now().Unix()),
+		})
+		return
+	}
+
+	writeJSON(w, 200, s.ReqLog.Stats(rangeStr))
+}
+
+
+// HandleTokenCreditsRefresh handles POST /api/v1/tokens/{id}/credits/refresh.
+func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	// Extract token ID from path: /api/v1/tokens/{id}/credits/refresh
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, "/api/v1/tokens/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	tokenID := parts[0]
+
+	tokenInfo := s.TokenMgr.GetByID(tokenID)
+	if tokenInfo == nil {
+		writeJSON(w, 404, map[string]string{"detail": "token not found"})
+		return
+	}
+	platform, _ := tokenInfo["platform"].(string)
+	tokenValue, _ := tokenInfo["value"].(string)
+
+	if platform == "leonardo" && s.LeonardoClient != nil {
+		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+		if err != nil {
+			writeJSON(w, 400, map[string]interface{}{
+				"ok": false, "detail": "Leonardo积分刷新失败: " + err.Error(),
+			})
+			return
+		}
+		// Update token credits and expiry in the pool
+		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+		s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
+		s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
+		writeJSON(w, 200, map[string]interface{}{
+			"ok":                true,
+			"credits_available": credits.TotalTokens,
+			"credits_total":     credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens,
+			"plan":              credits.Plan,
+			"email":             session.Email,
+			"jwt_remaining":     session.GetJWTRemainingSeconds(),
+		})
+		return
+	}
+
+	// For non-Leonardo tokens, return stub
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "credits refresh not supported for this platform"})
+}
+
+// HandleTokenRefresh handles POST /api/v1/tokens/{id}/refresh.
+func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	// Extract token ID from path: /api/v1/tokens/{id}/refresh
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, "/api/v1/tokens/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	tokenID := parts[0]
+
+	tokenInfo := s.TokenMgr.GetByID(tokenID)
+	if tokenInfo == nil {
+		writeJSON(w, 404, map[string]string{"detail": "token not found"})
+		return
+	}
+	platform, _ := tokenInfo["platform"].(string)
+	tokenValue, _ := tokenInfo["value"].(string)
+
+	if platform == "leonardo" && s.LeonardoClient != nil {
+		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
+		if err != nil {
+			writeJSON(w, 400, map[string]interface{}{
+				"ok": false, "detail": "Token刷新失败: " + err.Error(),
+			})
+			return
+		}
+		// Update token info in the pool
+		if credits != nil {
+			s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+		}
+		s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
+		s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
+
+		result := map[string]interface{}{
+			"ok":            true,
+			"email":         session.Email,
+			"jwt_remaining": session.GetJWTRemainingSeconds(),
+		}
+		if credits != nil {
+			result["credits_available"] = credits.TotalTokens
+			result["plan"] = credits.Plan
+		}
+		writeJSON(w, 200, result)
+		return
+	}
+
+	// For non-Leonardo tokens
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "token refresh not supported for this platform"})
+}
+
+// HandleTokenAutoRefresh handles PUT /api/v1/tokens/{id}/auto-refresh?enabled=true|false.
+func (s *Server) HandleTokenAutoRefresh(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	path := r.URL.Path
+	trimmed := strings.TrimPrefix(path, "/api/v1/tokens/")
+	parts := strings.SplitN(trimmed, "/", 2)
+	tokenID := parts[0]
+
+	enabled := r.URL.Query().Get("enabled") == "true"
+
+	if err := s.TokenMgr.SetAutoRefresh(tokenID, enabled); err != nil {
+		writeJSON(w, 404, map[string]string{"detail": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":           true,
+		"auto_refresh": enabled,
+	})
+}
+
+// HandleStubPost returns ok for unimplemented POST endpoints.
+func (s *Server) HandleStubPost(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "not yet implemented in Go backend"})
+}
+
+var startTime = time.Now()
+
+func extractPathParam(path, prefix string) string {
+	trimmed := strings.TrimPrefix(path, prefix)
+	// Remove any trailing segments
+	if idx := strings.Index(trimmed, "/"); idx >= 0 {
+		trimmed = trimmed[:idx]
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ──────────────────────────────────────────────────────────
+// Leonardo Video Generation Handlers
+// ──────────────────────────────────────────────────────────
+
+// HandleLeonardoGenerate handles POST /api/v1/leonardo/generate.
+func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+
+	var body struct {
+		TokenID        string `json:"token_id"`
+		Prompt         string `json:"prompt"`
+		Model          string `json:"model"`
+		Mode           string `json:"mode"`
+		Duration       int    `json:"duration"`
+		Width          int    `json:"width"`
+		Height         int    `json:"height"`
+		Public         *bool  `json:"public,omitempty"` // default true
+		ImageGuidance  []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Strength string `json:"strength"`
+		} `json:"image_guidance,omitempty"`
+		StartFrame []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"start_frame,omitempty"`
+		EndFrame []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"end_frame,omitempty"`
+		VideoReference []struct {
+			ID       string  `json:"id"`
+			Type     string  `json:"type"`
+			Duration float64 `json:"duration"`
+		} `json:"video_reference,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid request body"})
+		return
+	}
+	if body.Prompt == "" {
+		writeJSON(w, 400, map[string]string{"detail": "prompt is required"})
+		return
+	}
+
+	// Get session from token pool
+	session, usedTokenID := s.getLeonardoSession(body.TokenID)
+	if session == nil {
+		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found or no Leonardo tokens available"})
+		return
+	}
+
+	// Build image refs (multi-image reference)
+	var imageRefs []leonardo.ImageRef
+	for _, ig := range body.ImageGuidance {
+		imageRefs = append(imageRefs, leonardo.ImageRef{
+			ID:       ig.ID,
+			Type:     ig.Type,
+			Strength: ig.Strength,
+		})
+	}
+
+	// Build start/end frame refs
+	var startFrames []leonardo.FrameRef
+	for _, sf := range body.StartFrame {
+		startFrames = append(startFrames, leonardo.FrameRef{
+			ID:   sf.ID,
+			Type: sf.Type,
+		})
+	}
+	var endFrames []leonardo.FrameRef
+	for _, ef := range body.EndFrame {
+		endFrames = append(endFrames, leonardo.FrameRef{
+			ID:   ef.ID,
+			Type: ef.Type,
+		})
+	}
+
+	// Build video refs
+	var videoRefs []leonardo.VideoRef
+	for _, vr := range body.VideoReference {
+		videoRefs = append(videoRefs, leonardo.VideoRef{
+			ID:       vr.ID,
+			Type:     vr.Type,
+			Duration: vr.Duration,
+		})
+	}
+
+	// Default public to true (like Leonardo web client)
+	isPublic := true
+	if body.Public != nil {
+		isPublic = *body.Public
+	}
+
+	genReq := &leonardo.GenerateRequest{
+		Model:  body.Model,
+		Public: isPublic,
+		Params: leonardo.GenerateParams{
+			Prompt:         body.Prompt,
+			Mode:           body.Mode,
+			Duration:       body.Duration,
+			Width:          body.Width,
+			Height:         body.Height,
+			MotionHasAudio: true,
+			ImageRefs:      imageRefs,
+			StartFrame:     startFrames,
+			EndFrame:       endFrames,
+			VideoRefs:      videoRefs,
+		},
+	}
+
+	startTime := time.Now()
+	result, err := s.LeonardoClient.Generate(session, genReq)
+	elapsedSec := time.Since(startTime).Seconds()
+
+	if err != nil {
+		// Log failed request
+		if s.ReqLog != nil {
+			s.ReqLog.Add(reqlog.Entry{
+				ID:          fmt.Sprintf("leo-%d", time.Now().UnixNano()),
+				StatusCode:  500,
+				TaskStatus:  "FAILED",
+				Type:        "video",
+				DurationSec: int(elapsedSec),
+				Model:       fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
+				Prompt:      body.Prompt,
+				ErrorCode:   err.Error(),
+				Operation:   "leonardo.generate",
+			})
+		}
+		writeJSON(w, 500, map[string]interface{}{
+			"detail": fmt.Sprintf("generation failed: %v", err),
+		})
+		return
+	}
+
+	// Log pending request
+	if s.ReqLog != nil {
+		s.ReqLog.Add(reqlog.Entry{
+			ID:           fmt.Sprintf("leo-%d", time.Now().UnixNano()),
+			StatusCode:   200,
+			TaskStatus:   "IN_PROGRESS",
+			Type:         "video",
+			DurationSec:  int(elapsedSec),
+			Model:        fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
+			Prompt:       body.Prompt,
+			GenerationID: result.GenerationID,
+			CreditCost:   result.APICreditCost,
+			Operation:    "leonardo.generate",
+		})
+	}
+
+	// Background polling goroutine to auto-update log status
+	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID)
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":             true,
+		"generation_id":  result.GenerationID,
+		"credit_cost":    result.APICreditCost,
+	})
+}
+
+// HandleLeonardoStatus handles GET /api/v1/leonardo/status?id=xxx.
+func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+
+	genID := r.URL.Query().Get("id")
+	tokenID := r.URL.Query().Get("token_id")
+	if genID == "" {
+		writeJSON(w, 400, map[string]string{"detail": "id parameter required"})
+		return
+	}
+
+	session, _ := s.getLeonardoSession(tokenID)
+	if session == nil {
+		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found"})
+		return
+	}
+
+	status, err := s.LeonardoClient.PollGenerationStatus(session, genID)
+	if err != nil {
+		writeJSON(w, 500, map[string]interface{}{"detail": err.Error()})
+		return
+	}
+
+	resp := map[string]interface{}{
+		"ok":     true,
+		"id":     status.ID,
+		"status": status.Status,
+	}
+
+	// If complete, fetch detail with video URLs
+	if status.Status == "COMPLETE" {
+		detail, err := s.LeonardoClient.GetGenerationDetail(session, genID)
+		if err == nil && len(detail.Images) > 0 {
+			videos := make([]map[string]string, 0)
+			var firstMP4, firstThumb string
+			for _, img := range detail.Images {
+				v := map[string]string{"id": img.ID}
+				if img.MotionMP4 != "" {
+					v["mp4_url"] = img.MotionMP4
+					if firstMP4 == "" {
+						firstMP4 = img.MotionMP4
+					}
+				}
+				if img.MotionGIF != "" {
+					v["gif_url"] = img.MotionGIF
+				}
+				if img.URL != "" {
+					v["thumbnail_url"] = img.URL
+					if firstThumb == "" {
+						firstThumb = img.URL
+					}
+				}
+				videos = append(videos, v)
+			}
+			resp["videos"] = videos
+			resp["prompt"] = detail.Prompt
+
+			// Update log entry
+			if s.ReqLog != nil {
+				previewURL := firstMP4
+				previewKind := "video"
+				if previewURL == "" {
+					previewURL = firstThumb
+					previewKind = "image"
+				}
+				s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", previewURL, previewKind)
+			}
+		}
+	} else if status.Status == "FAILED" {
+		if s.ReqLog != nil {
+			s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+		}
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// HandleLeonardoUploadImage handles POST /api/v1/leonardo/upload-image.
+// Accepts multipart form with "file" field and optional "token_id".
+// Returns the uploaded image ID for use in image_guidance.
+func (s *Server) HandleLeonardoUploadImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]string{"detail": "method not allowed"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+
+	// Parse multipart form (max 20MB)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "failed to parse form: " + err.Error()})
+		return
+	}
+
+	tokenID := r.FormValue("token_id")
+	session, _ := s.getLeonardoSession(tokenID)
+	if session == nil {
+		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "file is required"})
+		return
+	}
+	defer file.Close()
+
+	imageData, err := io.ReadAll(file)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"detail": "failed to read file"})
+		return
+	}
+
+	// Determine file extension
+	ext := "jpg"
+	if header.Filename != "" {
+		parts := strings.Split(header.Filename, ".")
+		if len(parts) > 1 {
+			ext = parts[len(parts)-1]
+		}
+	}
+
+	// Step 1: Init upload slot
+	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+	if err != nil {
+		writeJSON(w, 500, map[string]interface{}{"detail": fmt.Sprintf("upload init failed: %v", err)})
+		return
+	}
+
+	// Step 2: Upload to S3
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, initResult.Key, imageData, contentType); err != nil {
+		writeJSON(w, 500, map[string]interface{}{"detail": fmt.Sprintf("s3 upload failed: %v", err)})
+		return
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":       true,
+		"image_id": initResult.ID,
+		"type":     "UPLOADED",
+	})
+}
+
+// pollGenerationStatus runs in a goroutine to auto-update log status.
+func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID string, tokenID string) {
+	const (
+		pollInterval = 10 * time.Second
+		maxDuration  = 10 * time.Minute
+	)
+
+	deadline := time.Now().Add(maxDuration)
+	startTime := time.Now()
+
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		status, err := s.LeonardoClient.PollGenerationStatus(session, genID)
+		if err != nil {
+			log.Printf("[poll] error polling %s: %v", genID, err)
+			continue
+		}
+
+		elapsed := time.Since(startTime).Seconds()
+
+		switch status.Status {
+		case "COMPLETE":
+			log.Printf("[poll] generation %s completed (%.1fs)", genID, elapsed)
+			// Fetch detail for preview URL
+			detail, err := s.LeonardoClient.GetGenerationDetail(session, genID)
+			if err == nil && len(detail.Images) > 0 {
+				previewURL := ""
+				previewKind := ""
+				for _, img := range detail.Images {
+					if img.MotionMP4 != "" {
+						previewURL = img.MotionMP4
+						previewKind = "video"
+						break
+					}
+					if img.URL != "" && previewURL == "" {
+						previewURL = img.URL
+						previewKind = "image"
+					}
+				}
+				if s.ReqLog != nil {
+					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", previewURL, previewKind)
+					s.ReqLog.UpdateDuration(genID, elapsed)
+				}
+			} else {
+				if s.ReqLog != nil {
+					s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", "", "")
+					s.ReqLog.UpdateDuration(genID, elapsed)
+				}
+			}
+			// Refresh token credits
+			s.refreshTokenCredits(tokenID, session)
+			return
+
+		case "FAILED":
+			log.Printf("[poll] generation %s failed (%.1fs)", genID, elapsed)
+			if s.ReqLog != nil {
+				s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+				s.ReqLog.UpdateDuration(genID, elapsed)
+			}
+			return
+		}
+		// Still PENDING, continue polling
+	}
+
+	// Timeout
+	log.Printf("[poll] generation %s timed out after %v", genID, maxDuration)
+	if s.ReqLog != nil {
+		s.ReqLog.UpdateByGenerationID(genID, "FAILED", "", "")
+	}
+}
+
+// refreshTokenCredits queries latest credits from Leonardo and updates the token pool.
+func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSession) {
+	if tokenID == "" || session == nil {
+		return
+	}
+	_, credits, err := s.LeonardoClient.ValidateToken(session.FullCookie)
+	if err != nil {
+		log.Printf("[poll] failed to refresh credits for token %s: %v", tokenID, err)
+		return
+	}
+	if credits != nil {
+		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+		log.Printf("[poll] refreshed credits for token %s: %d remaining", tokenID, credits.TotalTokens)
+	}
+}
+
+// getLeonardoSession finds a Leonardo session from the token pool.
+// Returns the session and the token ID used.
+func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, string) {
+	// If specific tokenID provided, use that
+	if tokenID != "" {
+		info := s.TokenMgr.GetByID(tokenID)
+		if info == nil {
+			return nil, ""
+		}
+		rawToken, _ := info["value"].(string)
+		if rawToken == "" {
+			return nil, ""
+		}
+		session := &leonardo.TokenSession{
+			FullCookie: rawToken,
+		}
+		// Try to refresh/initialize session
+		if err := s.LeonardoClient.RefreshSession(session); err != nil {
+			return nil, ""
+		}
+		return session, tokenID
+	}
+
+	// Otherwise find first available Leonardo token
+	tokens := s.TokenMgr.ListFull()
+	for _, t := range tokens {
+		platform, _ := t["platform"].(string)
+		status, _ := t["status"].(string)
+		if platform == "leonardo" && status == "active" {
+			rawToken, _ := t["value"].(string)
+			if rawToken == "" {
+				continue
+			}
+			session := &leonardo.TokenSession{
+				FullCookie: rawToken,
+			}
+			if err := s.LeonardoClient.RefreshSession(session); err != nil {
+				continue
+			}
+			foundID, _ := t["id"].(string)
+			return session, foundID
+		}
+	}
+	return nil, ""
+}
+

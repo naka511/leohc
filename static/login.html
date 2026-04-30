@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理登录 - Adobe2API</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <div class="bg-orb bg-orb-a"></div>
+  <div class="bg-orb bg-orb-b"></div>
+
+  <main class="shell" style="max-width: 520px;">
+    <section class="card" style="padding: 26px;">
+      <h1 style="margin: 0 0 6px 0;">管理后台登录</h1>
+      <p class="muted" style="margin: 0 0 16px 0;">默认账号密码：admin / admin</p>
+
+      <div class="form-group">
+        <label for="username">账号</label>
+        <input id="username" class="input-text" type="text" autocomplete="username" />
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label for="password">密码</label>
+        <input id="password" class="input-text" type="password" autocomplete="current-password" />
+      </div>
+
+      <div class="actions" style="margin-top: 16px;">
+        <button id="loginBtn" type="button">登录</button>
+        <span id="loginMsg" class="msg"></span>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const username = document.getElementById("username");
+      const password = document.getElementById("password");
+      const loginBtn = document.getElementById("loginBtn");
+      const loginMsg = document.getElementById("loginMsg");
+
+      function showMsg(text, isError) {
+        loginMsg.textContent = text;
+        loginMsg.style.color = isError ? "#ffb4bc" : "#4de2c4";
+      }
+
+      async function checkAlreadyLogin() {
+        try {
+          const res = await fetch("/api/v1/auth/me");
+          if (res.ok) {
+            window.location.href = "/";
+          }
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      async function doLogin() {
+        loginBtn.disabled = true;
+        showMsg("", false);
+        try {
+          const res = await fetch("/api/v1/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: String(username.value || "").trim(),
+              password: String(password.value || ""),
+            }),
+          });
+          if (!res.ok) {
+            let detail = "登录失败";
+            try {
+              const body = await res.json();
+              detail = body.detail || detail;
+            } catch (_) {
+              // ignore
+            }
+            showMsg(detail, true);
+            return;
+          }
+          window.location.href = "/";
+        } catch (err) {
+          showMsg(err.message || "登录失败", true);
+        } finally {
+          loginBtn.disabled = false;
+        }
+      }
+
+      loginBtn.addEventListener("click", doLogin);
+      password.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") doLogin();
+      });
+      checkAlreadyLogin();
+    })();
+  </script>
+</body>
+</html>

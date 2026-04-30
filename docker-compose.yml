@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  leo-go:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./config:/app/config
+      - ./generated:/app/generated
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

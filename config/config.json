@@ -1,0 +1,39 @@
+{
+  "admin_password": "***",
+  "admin_session_secret": "leo-go-session-secret",
+  "admin_username": "admin",
+  "api_key": "chf658h757hg76",
+  "batch_concurrency": 5,
+  "generate_timeout": 300,
+  "generated_max_size_mb": 1024,
+  "generated_prune_size_mb": 200,
+  "imgbed_api_key": "",
+  "imgbed_api_url": "",
+  "imgbed_enabled": false,
+  "proxy": "",
+  "public_base_url": "http://127.0.0.1:8787/",
+  "refresh_interval_hours": 15,
+  "resource_proxy": "",
+  "resource_use_proxy": false,
+  "retry_backoff_seconds": 1,
+  "retry_enabled": true,
+  "retry_max_attempts": 3,
+  "retry_on_error_types": [
+    "timeout",
+    "connection",
+    "proxy"
+  ],
+  "retry_on_status_codes": [
+    429,
+    451,
+    500,
+    502,
+    503,
+    504
+  ],
+  "token_rotation_strategy": "round_robin",
+  "token_success_auto_disable_enabled": false,
+  "token_success_auto_disable_threshold": 2,
+  "use_proxy": false,
+  "use_upstream_result_url": false
+}
