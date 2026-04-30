@@ -90,6 +90,31 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 - `duration`
 - `size`
 
+单图 URL 图生视频也支持，默认会把 `image_url` 作为首帧参考：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Animate this portrait with subtle camera motion",
+    "model": "seedance-2.0-fast",
+    "duration": 5,
+    "size": "720x1280",
+    "image_url": "https://example.com/portrait.jpg"
+  }'
+```
+
+也支持这些扩展字段：
+
+- `image_url`
+- `start_image_url`
+- `end_image_url`
+- `image_urls`
+- `image_guidance`
+- `start_frame`
+- `end_frame`
+
 ## Leonardo 高级接口
 
 ### 上传参考图
@@ -113,6 +138,26 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
     "duration": 5,
     "width": 720,
     "height": 1280
+  }'
+```
+
+高级接口里的图片引导字段，既支持直接传 Leonardo `id`，也支持传远程图片 `url`。例如：
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token_id": "YOUR_TOKEN_ID",
+    "prompt": "Animate the uploaded poster into a vertical teaser video",
+    "model": "seedance-2.0-fast",
+    "duration": 5,
+    "width": 720,
+    "height": 1280,
+    "start_frame": [
+      {
+        "url": "https://example.com/poster.png"
+      }
+    ]
   }'
 ```
 

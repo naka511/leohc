@@ -146,7 +146,19 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.handleLeonardoVideoGeneration(w, r, prompt, modelID, duration, width, height)
+	session, usedTokenID := s.getLeonardoSession("")
+	if session == nil {
+		writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+		return
+	}
+
+	imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
+	if err != nil {
+		writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
+		return
+	}
+
+	s.handleLeonardoVideoGeneration(w, r, session, usedTokenID, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
 }
 
 // ---- Helpers ----
@@ -223,15 +235,9 @@ func isSupportedSeedanceModel(modelID string) bool {
 	}
 }
 
-func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Request, prompt string, modelID string, duration int, width int, height int) {
+func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Request, session *leonardo.TokenSession, usedTokenID string, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) {
 	if s.LeonardoClient == nil {
 		writeJSON(w, 500, errorResp("Leonardo client not initialized", "server_error"))
-		return
-	}
-
-	session, usedTokenID := s.getLeonardoSession("")
-	if session == nil {
-		writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
 		return
 	}
 
@@ -244,6 +250,10 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 			Width:          width,
 			Height:         height,
 			MotionHasAudio: true,
+			ImageRefs:      imageRefs,
+			StartFrame:     startFrames,
+			EndFrame:       endFrames,
+			VideoRefs:      videoRefs,
 		},
 	}
 
@@ -313,4 +323,153 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", "", "Timeout")
 	}
 	writeJSON(w, 504, errorResp("Generation timed out", "timeout"))
+}
+
+func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {
+	uploadCache := make(map[string]string)
+
+	var imageRefs []leonardo.ImageRef
+	var startFrames []leonardo.FrameRef
+	var endFrames []leonardo.FrameRef
+	var videoRefs []leonardo.VideoRef
+
+	if imageURL := strings.TrimSpace(toString(data["image_url"])); imageURL != "" {
+		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("invalid image_url: %w", err)
+		}
+		startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
+	}
+
+	if imageURL := strings.TrimSpace(toString(data["start_image_url"])); imageURL != "" {
+		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("invalid start_image_url: %w", err)
+		}
+		startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
+	}
+
+	if imageURL := strings.TrimSpace(toString(data["end_image_url"])); imageURL != "" {
+		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("invalid end_image_url: %w", err)
+		}
+		endFrames = append(endFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
+	}
+
+	if rawURLs, ok := data["image_urls"].([]interface{}); ok {
+		for idx, rawURL := range rawURLs {
+			imageURL := strings.TrimSpace(toString(rawURL))
+			if imageURL == "" {
+				continue
+			}
+			imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid image_urls[%d]: %w", idx, err)
+			}
+			imageRefs = append(imageRefs, leonardo.ImageRef{
+				ID:       imageID,
+				Type:     "UPLOADED",
+				Strength: "MID",
+			})
+		}
+	}
+
+	if rawGuidance, ok := data["image_guidance"].([]interface{}); ok {
+		for idx, item := range rawGuidance {
+			entry, _ := item.(map[string]interface{})
+			rawID := toString(entry["id"])
+			rawURL := toString(entry["url"])
+			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid image_guidance[%d]: %w", idx, err)
+			}
+			refType := strings.TrimSpace(toString(entry["type"]))
+			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
+				refType = "UPLOADED"
+			}
+			strength := strings.ToUpper(strings.TrimSpace(toString(entry["strength"])))
+			if strength == "" {
+				strength = "MID"
+			}
+			imageRefs = append(imageRefs, leonardo.ImageRef{
+				ID:       imageID,
+				Type:     refType,
+				Strength: strength,
+			})
+		}
+	}
+
+	if rawFrames, ok := data["start_frame"].([]interface{}); ok {
+		for idx, item := range rawFrames {
+			entry, _ := item.(map[string]interface{})
+			rawID := toString(entry["id"])
+			rawURL := toString(entry["url"])
+			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid start_frame[%d]: %w", idx, err)
+			}
+			refType := strings.TrimSpace(toString(entry["type"]))
+			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
+				refType = "UPLOADED"
+			}
+			startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: refType})
+		}
+	}
+
+	if rawFrames, ok := data["end_frame"].([]interface{}); ok {
+		for idx, item := range rawFrames {
+			entry, _ := item.(map[string]interface{})
+			rawID := toString(entry["id"])
+			rawURL := toString(entry["url"])
+			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid end_frame[%d]: %w", idx, err)
+			}
+			refType := strings.TrimSpace(toString(entry["type"]))
+			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
+				refType = "UPLOADED"
+			}
+			endFrames = append(endFrames, leonardo.FrameRef{ID: imageID, Type: refType})
+		}
+	}
+
+	if rawVideos, ok := data["video_reference"].([]interface{}); ok {
+		for idx, item := range rawVideos {
+			entry, _ := item.(map[string]interface{})
+			videoID := strings.TrimSpace(toString(entry["id"]))
+			if videoID == "" {
+				return nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: id is required", idx)
+			}
+			refType := strings.TrimSpace(toString(entry["type"]))
+			if refType == "" {
+				refType = "UPLOADED"
+			}
+			videoRef := leonardo.VideoRef{
+				ID:   videoID,
+				Type: refType,
+			}
+			switch durationValue := entry["duration"].(type) {
+			case float64:
+				videoRef.Duration = durationValue
+			case int:
+				videoRef.Duration = float64(durationValue)
+			}
+			videoRefs = append(videoRefs, videoRef)
+		}
+	}
+
+	return imageRefs, startFrames, endFrames, videoRefs, nil
+}
+
+func toString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	switch value := v.(type) {
+	case string:
+		return value
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }

@@ -6,8 +6,10 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -906,6 +908,8 @@ func (s *Server) HandleStubPost(w http.ResponseWriter, r *http.Request) {
 
 var startTime = time.Now()
 
+const maxRemoteImageBytes = 20 << 20
+
 func extractPathParam(path, prefix string) string {
 	trimmed := strings.TrimPrefix(path, prefix)
 	// Remove any trailing segments
@@ -948,15 +952,18 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		Public        *bool  `json:"public,omitempty"` // default true
 		ImageGuidance []struct {
 			ID       string `json:"id"`
+			URL      string `json:"url"`
 			Type     string `json:"type"`
 			Strength string `json:"strength"`
 		} `json:"image_guidance,omitempty"`
 		StartFrame []struct {
 			ID   string `json:"id"`
+			URL  string `json:"url"`
 			Type string `json:"type"`
 		} `json:"start_frame,omitempty"`
 		EndFrame []struct {
 			ID   string `json:"id"`
+			URL  string `json:"url"`
 			Type string `json:"type"`
 		} `json:"end_frame,omitempty"`
 		VideoReference []struct {
@@ -981,12 +988,23 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	uploadCache := make(map[string]string)
+
 	// Build image refs (multi-image reference)
 	var imageRefs []leonardo.ImageRef
 	for _, ig := range body.ImageGuidance {
+		refType := strings.TrimSpace(ig.Type)
+		if refType == "" || (strings.TrimSpace(ig.ID) == "" && strings.TrimSpace(ig.URL) != "") {
+			refType = "UPLOADED"
+		}
+		imageID, err := s.resolveLeonardoImageID(session, ig.ID, ig.URL, uploadCache)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid image_guidance entry: %v", err)})
+			return
+		}
 		imageRefs = append(imageRefs, leonardo.ImageRef{
-			ID:       ig.ID,
-			Type:     ig.Type,
+			ID:       imageID,
+			Type:     refType,
 			Strength: ig.Strength,
 		})
 	}
@@ -994,16 +1012,34 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	// Build start/end frame refs
 	var startFrames []leonardo.FrameRef
 	for _, sf := range body.StartFrame {
+		refType := strings.TrimSpace(sf.Type)
+		if refType == "" || (strings.TrimSpace(sf.ID) == "" && strings.TrimSpace(sf.URL) != "") {
+			refType = "UPLOADED"
+		}
+		imageID, err := s.resolveLeonardoImageID(session, sf.ID, sf.URL, uploadCache)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid start_frame entry: %v", err)})
+			return
+		}
 		startFrames = append(startFrames, leonardo.FrameRef{
-			ID:   sf.ID,
-			Type: sf.Type,
+			ID:   imageID,
+			Type: refType,
 		})
 	}
 	var endFrames []leonardo.FrameRef
 	for _, ef := range body.EndFrame {
+		refType := strings.TrimSpace(ef.Type)
+		if refType == "" || (strings.TrimSpace(ef.ID) == "" && strings.TrimSpace(ef.URL) != "") {
+			refType = "UPLOADED"
+		}
+		imageID, err := s.resolveLeonardoImageID(session, ef.ID, ef.URL, uploadCache)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid end_frame entry: %v", err)})
+			return
+		}
 		endFrames = append(endFrames, leonardo.FrameRef{
-			ID:   ef.ID,
-			Type: ef.Type,
+			ID:   imageID,
+			Type: refType,
 		})
 	}
 
@@ -1223,28 +1259,190 @@ func (s *Server) HandleLeonardoUploadImage(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Step 1: Init upload slot
-	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
-	if err != nil {
-		writeJSON(w, 500, map[string]interface{}{"detail": fmt.Sprintf("upload init failed: %v", err)})
-		return
-	}
-
 	// Step 2: Upload to S3
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
 	}
-	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, initResult.Key, imageData, contentType); err != nil {
-		writeJSON(w, 500, map[string]interface{}{"detail": fmt.Sprintf("s3 upload failed: %v", err)})
+	imageID, err := s.uploadLeonardoImageBytes(session, imageData, ext, contentType)
+	if err != nil {
+		writeJSON(w, 500, map[string]interface{}{"detail": err.Error()})
 		return
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":       true,
-		"image_id": initResult.ID,
+		"image_id": imageID,
 		"type":     "UPLOADED",
 	})
+}
+
+func (s *Server) resolveLeonardoImageID(session *leonardo.TokenSession, id, remoteURL string, cache map[string]string) (string, error) {
+	imageID := strings.TrimSpace(id)
+	if imageID != "" {
+		return imageID, nil
+	}
+
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		return "", fmt.Errorf("either id or url is required")
+	}
+	if cache != nil {
+		if cachedID, ok := cache[remoteURL]; ok && cachedID != "" {
+			return cachedID, nil
+		}
+	}
+
+	uploadedID, err := s.uploadLeonardoImageFromURL(session, remoteURL)
+	if err != nil {
+		return "", err
+	}
+	if cache != nil {
+		cache[remoteURL] = uploadedID
+	}
+	return uploadedID, nil
+}
+
+func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
+	imageData, contentType, ext, err := s.downloadRemoteImage(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	return s.uploadLeonardoImageBytes(session, imageData, ext, contentType)
+}
+
+func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageData []byte, ext, contentType string) (string, error) {
+	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+	if err != nil {
+		return "", fmt.Errorf("upload init failed: %w", err)
+	}
+	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, initResult.Key, imageData, contentType); err != nil {
+		return "", fmt.Errorf("s3 upload failed: %w", err)
+	}
+	return initResult.ID, nil
+}
+
+func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("invalid image url: %w", err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return nil, "", "", fmt.Errorf("image url must use http or https")
+	}
+
+	httpClient, err := s.newResourceHTTPClient(30 * time.Second)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	req, err := http.NewRequest("GET", parsedURL.String(), nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	req.Header.Set("User-Agent", "leo-go-image-fetch/1.0")
+	req.Header.Set("Accept", "image/*,*/*;q=0.8")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("fetch image url failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", "", fmt.Errorf("image url returned %d", resp.StatusCode)
+	}
+
+	imageData, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteImageBytes+1))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("read image url failed: %w", err)
+	}
+	if len(imageData) == 0 {
+		return nil, "", "", fmt.Errorf("image url returned empty body")
+	}
+	if len(imageData) > maxRemoteImageBytes {
+		return nil, "", "", fmt.Errorf("image url exceeds %d MB limit", maxRemoteImageBytes>>20)
+	}
+
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+		contentType = mediaType
+	}
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(imageData)
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", "", fmt.Errorf("image url did not return an image content type")
+	}
+
+	ext := imageExtFromContentType(contentType)
+	if ext == "" {
+		ext = imageExtFromURL(parsedURL.Path)
+	}
+	if ext == "" {
+		ext = "jpg"
+	}
+
+	return imageData, contentType, ext, nil
+}
+
+func (s *Server) newResourceHTTPClient(timeout time.Duration) (*http.Client, error) {
+	transport := &http.Transport{}
+
+	proxyStr := ""
+	if s.Config.GetBool("resource_use_proxy", false) {
+		proxyStr = strings.TrimSpace(s.Config.GetString("resource_proxy", ""))
+	} else if s.Config.GetBool("use_proxy", false) {
+		proxyStr = strings.TrimSpace(s.Config.GetString("proxy", ""))
+	}
+
+	if proxyStr != "" {
+		proxyURL, err := url.Parse(proxyStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy url: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}, nil
+}
+
+func imageExtFromContentType(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg", "image/jpg":
+		return "jpg"
+	case "image/png":
+		return "png"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	case "image/bmp":
+		return "bmp"
+	case "image/tiff":
+		return "tiff"
+	default:
+		return ""
+	}
+}
+
+func imageExtFromURL(rawPath string) string {
+	ext := strings.TrimPrefix(strings.ToLower(pathpkg.Ext(rawPath)), ".")
+	switch ext {
+	case "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff":
+		if ext == "jpeg" {
+			return "jpg"
+		}
+		if ext == "tif" {
+			return "tiff"
+		}
+		return ext
+	default:
+		return ""
+	}
 }
 
 // pollGenerationStatus runs in a goroutine to auto-update log status.
