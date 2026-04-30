@@ -354,12 +354,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       const accountName = accountNameSafe || '<span style="color:#7f96ad;">手动 Token</span>';
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';
       // Platform badge
-      const platformStr = String(t.platform || "adobe").toLowerCase();
+      const platformStr = String(t.platform || "leonardo").toLowerCase();
       const platformBadge = platformStr === "leonardo"
         ? '<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-bottom:2px;">Leonardo</span><br>'
         : '';
       const autoEnabled = t.auto_refresh && t.auto_refresh_enabled !== false;
-      const canAutoRefresh = t.auto_refresh || t.platform === "leonardo";
+      const canAutoRefresh = t.auto_refresh || platformStr === "leonardo";
       const autoRefreshCell = canAutoRefresh
         ? `<div style="display: flex; align-items: center;"><button class="switch-btn ${autoEnabled ? "on" : "off"}" onclick="toggleAutoRefresh('${t.id}', ${autoEnabled ? "false" : "true"})" title="${autoEnabled ? "点击关闭自动刷新" : "点击开启自动刷新"}"><span class="switch-knob"></span></button><span class="switch-text">${autoEnabled ? "开启" : "关闭"}</span></div>`
         : `<div style="display: flex; align-items: center;"><button class="switch-btn off" disabled title="手动 token 不支持自动刷新"><span class="switch-knob"></span></button><span class="switch-text" style="color:#7f96ad;">手动</span></div>`;
@@ -369,7 +369,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Token value display: use value_preview (masked), fallback to value
       const tokenDisplay = escapeHtml(String(t.value_preview || t.value || "***"));
 
-      const canRefresh = t.auto_refresh || t.platform === "leonardo";
+      const canRefresh = t.auto_refresh || platformStr === "leonardo";
       const refreshTokenBtn = canRefresh
         ? `<button class="action-mini" onclick="refreshToken('${t.id}')">刷新Token</button>`
         : `<button class="action-mini" disabled title="仅自动刷新 token 支持刷新">刷新Token</button>`;
@@ -402,7 +402,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   addBtn.addEventListener("click", async () => {
-    const platform = document.getElementById("tokenPlatformSelect")?.value || "adobe";
+    const platform = document.getElementById("tokenPlatformSelect")?.value || "leonardo";
     let tokens = [];
 
     if (platform === "leonardo") {
@@ -561,6 +561,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Platform selector: toggle help text and placeholder
   const tokenPlatformSelect = document.getElementById("tokenPlatformSelect");
   const leonardoCookieHelp = document.getElementById("leonardoCookieHelp");
+  const syncTokenPlatformHelp = () => {
+    if (leonardoCookieHelp) leonardoCookieHelp.style.display = "block";
+    if (tokenInput) {
+      tokenInput.placeholder = "粘贴完整 Cookie 字符串（从浏览器 F12 Network 中复制）\n\n例如：\n__Secure-better-auth.session_token=AlYJi...; __Secure-better-auth.session_data.0=eyJ...; ...";
+    }
+  };
   if (tokenPlatformSelect) {
     tokenPlatformSelect.addEventListener("change", () => {
       const isLeo = tokenPlatformSelect.value === "leonardo";
@@ -572,6 +578,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     });
   }
+  syncTokenPlatformHelp();
 
   if (openCookieImportBtn) {
     openCookieImportBtn.addEventListener("click", async () => {

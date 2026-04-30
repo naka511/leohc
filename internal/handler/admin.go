@@ -163,17 +163,17 @@ func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"detail": "token is required"})
 		return
 	}
-	platform := body.Platform
+	platform := strings.ToLower(strings.TrimSpace(body.Platform))
 	if platform == "" {
-		platform = "adobe"
+		platform = "leonardo"
+	}
+	if platform != "leonardo" {
+		writeJSON(w, 400, map[string]string{"detail": "unsupported platform; only leonardo is available"})
+		return
 	}
 	tokenType := body.TokenType
 	if tokenType == "" {
-		if platform == "leonardo" {
-			tokenType = "session_token"
-		} else {
-			tokenType = "jwt"
-		}
+		tokenType = "session_token"
 	}
 
 	// For Leonardo tokens, save first then try to validate in background
@@ -358,14 +358,15 @@ func (s *Server) HandleTokenBatchAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	added, duplicates, failed := 0, 0, 0
 	for _, t := range body.Tokens {
-		platform := t.Platform
+		platform := strings.ToLower(strings.TrimSpace(t.Platform))
 		if platform == "" {
-			platform = "adobe"
+			platform = "leonardo"
 		}
-		tokenType := "jwt"
-		if platform == "leonardo" {
-			tokenType = "session_token"
+		if platform != "leonardo" {
+			failed++
+			continue
 		}
+		tokenType := "session_token"
 		_, dup, err := s.TokenMgr.Add(t.Token, platform, tokenType, t.AccountName, t.AccountEmail, t.Source)
 		if err != nil {
 			failed++

@@ -11,8 +11,6 @@ import (
 
 	"leo-go/internal/config"
 	"leo-go/internal/handler"
-	"leo-go/internal/provider"
-	"leo-go/internal/provider/adobe"
 	"leo-go/internal/provider/leonardo"
 	"leo-go/internal/reqlog"
 	"leo-go/internal/store"
@@ -55,12 +53,6 @@ func main() {
 	tokenMgr := token.NewManager(sqlStore)
 	log.Printf("[token] pool ready: %d tokens loaded", tokenMgr.Count())
 
-	// Provider registry
-	registry := provider.NewRegistry()
-	adobeClient := adobe.NewClient()
-	registry.Register(adobeClient)
-	defaultProvider, _ := registry.Default()
-
 	// Leonardo client
 	proxy := ""
 	if cfg.GetBool("use_proxy", false) {
@@ -74,8 +66,6 @@ func main() {
 
 	srv := &handler.Server{
 		TokenMgr:       tokenMgr,
-		Provider:       defaultProvider,
-		Registry:       registry,
 		Config:         cfg,
 		GeneratedDir:   generatedDir,
 		LeonardoClient: leoClient,

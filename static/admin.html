@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adobe2API 控制台</title>
+  <title>Leo-Go 控制台</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -15,7 +15,7 @@
 
   <main class="shell">
     <header class="header card" style="text-align: center; padding-bottom: 16px;">
-      <h1 style="font-size: 24px; font-weight: 800; letter-spacing: 0.05em;">Adobe2API</h1>
+      <h1 style="font-size: 24px; font-weight: 800; letter-spacing: 0.05em;">Leo-Go</h1>
       <p class="muted" style="margin-top: 4px;">Firefly 图像生成 API 中转服务</p>
     </header>
 
@@ -419,13 +419,12 @@
         <div class="form-group" style="margin-bottom: 10px;">
           <label for="tokenPlatformSelect">平台</label>
           <select id="tokenPlatformSelect" class="input-select" style="width: 200px;">
-            <option value="adobe">Adobe Firefly</option>
-            <option value="leonardo">Leonardo.ai</option>
+            <option value="leonardo">Seedance / Leonardo</option>
           </select>
-          <p class="help" id="tokenPlatformHelp">Adobe: 粘贴 JWT token。Leonardo: 粘贴完整 Cookie 字符串。</p>
+          <p class="help" id="tokenPlatformHelp">粘贴完整 Cookie 字符串。</p>
         </div>
         <textarea id="tokenInput" placeholder="支持批量添加：一行一个 Token（例如&#10;eyJhbGciOiJSUz...&#10;eyJhbGciOiJSUz...）"></textarea>
-        <p class="help" id="leonardoCookieHelp" style="display:none; color:#f0c040; margin-top:4px;">
+        <p class="help" id="leonardoCookieHelp" style="display:block; color:#f0c040; margin-top:4px;">
           💡 获取方法：浏览器 F12 → Network → 刷新页面 → 点击任意 app.leonardo.ai 请求 → 复制 Request Headers 中的 <strong>Cookie</strong> 整行值
         </p>
         <div class="form-group" style="margin-top: 10px;">

@@ -18,9 +18,9 @@ import (
 type Token struct {
 	ID                 string  `json:"id"`
 	Value              string  `json:"value"`
-	Platform           string  `json:"platform"`            // "adobe", "leonardo", etc.
-	TokenType          string  `json:"token_type"`           // "jwt", "cookie", "api_key"
-	Status             string  `json:"status"`               // "active", "invalid", "exhausted", "disabled"
+	Platform           string  `json:"platform"`   // "leonardo", etc.
+	TokenType          string  `json:"token_type"` // "session_token", "cookie", "api_key"
+	Status             string  `json:"status"`     // "active", "invalid", "exhausted", "disabled"
 	Fails              int     `json:"fails"`
 	SuccessCount       int     `json:"success_count"`
 	TotalSuccessCount  int     `json:"total_success_count"`
@@ -41,10 +41,10 @@ type Token struct {
 
 // Manager manages the token pool with thread-safe operations.
 type Manager struct {
-	mu       sync.Mutex
-	tokens   []*Token
-	store    *store.SQLiteStore
-	rrIndex  int // round-robin index
+	mu      sync.Mutex
+	tokens  []*Token
+	store   *store.SQLiteStore
+	rrIndex int // round-robin index
 }
 
 // NewManager creates a new token manager.
@@ -108,11 +108,13 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 	if value == "" {
 		return nil, false, fmt.Errorf("token value is required")
 	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
 	if platform == "" {
-		platform = "adobe"
+		platform = "leonardo"
 	}
+	tokenType = strings.ToLower(strings.TrimSpace(tokenType))
 	if tokenType == "" {
-		tokenType = "jwt"
+		tokenType = "session_token"
 	}
 
 	tokenID := GenerateTokenID(value)
@@ -152,7 +154,7 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 		AddedAt:      now,
 		AccountName:  accountName,
 		AccountEmail: accountEmail,
-		Source:        source,
+		Source:       source,
 	}
 	m.tokens = append(m.tokens, t)
 	m.save()
@@ -518,8 +520,8 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 	t := &Token{
 		ID:                 tokenID,
 		Value:              value,
-		Platform:           "adobe",
-		TokenType:          "jwt",
+		Platform:           "leonardo",
+		TokenType:          "session_token",
 		Status:             "active",
 		AddedAt:            now,
 		AccountName:        accountName,
@@ -675,10 +677,10 @@ func mapToToken(m map[string]interface{}) *Token {
 	var t Token
 	json.Unmarshal(raw, &t)
 	if t.Platform == "" {
-		t.Platform = "adobe"
+		t.Platform = "leonardo"
 	}
 	if t.TokenType == "" {
-		t.TokenType = "jwt"
+		t.TokenType = "session_token"
 	}
 	return &t
 }
