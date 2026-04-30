@@ -1,6 +1,7 @@
 package leonardo
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -968,22 +969,35 @@ func min(a, b int) int {
 // Image Upload for Guidance (multi-image reference)
 // ──────────────────────────────────────────────────────────
 
-const uploadInitMutation = `mutation UploadInitImage($arg1: InitImageUploadInput!) {
-  uploadInitImage(arg1: $arg1) {
-    id
-    fields
-    key
+const uploadImageMutation = `mutation UploadImage($uploadImageInput: UploadImageInput!) {
+  uploadImage(arg1: $uploadImageInput) {
+    uploadId
     url
+    fields
+    __typename
+  }
+}`
+
+const initImageModerationQuery = `query GetInitImageModeration($akUUID: uuid!) {
+  init_image_moderation(where: {akUUID: {_eq: $akUUID}}) {
+    akUUID
+    initImageId
+    checkStatus
     __typename
   }
 }`
 
 // UploadInitResult holds the response from the upload init mutation.
 type UploadInitResult struct {
-	ID     string `json:"id"`
-	Fields string `json:"fields"`
-	Key    string `json:"key"`
-	URL    string `json:"url"`
+	UploadID string `json:"uploadId"`
+	Fields   string `json:"fields"`
+	URL      string `json:"url"`
+}
+
+type InitImageModeration struct {
+	AKUUID      string `json:"akUUID"`
+	InitImageID string `json:"initImageId"`
+	CheckStatus string `json:"checkStatus"`
 }
 
 // UploadInitImage initializes an image upload slot on Leonardo.
@@ -1002,13 +1016,14 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 	}
 
 	gqlReq := graphqlRequest{
-		OperationName: "UploadInitImage",
+		OperationName: "UploadImage",
 		Variables: map[string]interface{}{
-			"arg1": map[string]interface{}{
-				"extension": ext,
+			"uploadImageInput": map[string]interface{}{
+				"uploadType": "INIT",
+				"extension":  ext,
 			},
 		},
-		Query: uploadInitMutation,
+		Query: uploadImageMutation,
 	}
 
 	body, err := c.doGraphQL(jwt, gqlReq)
@@ -1018,7 +1033,7 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 
 	var gqlResp struct {
 		Data struct {
-			UploadInitImage UploadInitResult `json:"uploadInitImage"`
+			UploadImage UploadInitResult `json:"uploadImage"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
@@ -1033,50 +1048,146 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 		return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
 	}
 
-	result := &gqlResp.Data.UploadInitImage
-	log.Printf("[Leonardo] Upload init: id=%s, url=%s", result.ID, result.URL)
+	result := &gqlResp.Data.UploadImage
+	log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
 	return result, nil
 }
 
-// UploadImageToS3 uploads the actual image data to the S3 presigned URL.
-// fieldsJSON is the JSON string returned by uploadInitImage, containing S3 form fields.
-func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, key string, imageData []byte, contentType string) error {
+// WaitForInitImage polls Leonardo moderation status until the uploaded image
+// becomes available as a usable init image ID.
+func (c *Client) WaitForInitImage(session *TokenSession, uploadID string, timeout time.Duration) (string, error) {
+	if strings.TrimSpace(uploadID) == "" {
+		return "", fmt.Errorf("upload id is required")
+	}
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	if err := c.EnsureValidJWT(session); err != nil {
+		return "", fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollInterval := 1500 * time.Millisecond
+	lastStatus := ""
+
+	for time.Now().Before(deadline) {
+		session.mu.RLock()
+		jwt := session.JWT
+		session.mu.RUnlock()
+
+		gqlReq := graphqlRequest{
+			OperationName: "GetInitImageModeration",
+			Variables: map[string]interface{}{
+				"akUUID": uploadID,
+			},
+			Query: initImageModerationQuery,
+		}
+
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			return "", err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				InitImageModeration []InitImageModeration `json:"init_image_moderation"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return "", fmt.Errorf("parse init image moderation response: %w", err)
+		}
+
+		if len(gqlResp.Errors) > 0 {
+			return "", fmt.Errorf("init image moderation error: %s", gqlResp.Errors[0].Message)
+		}
+
+		if len(gqlResp.Data.InitImageModeration) > 0 {
+			item := gqlResp.Data.InitImageModeration[0]
+			lastStatus = strings.ToUpper(strings.TrimSpace(item.CheckStatus))
+			if strings.TrimSpace(item.InitImageID) != "" {
+				return item.InitImageID, nil
+			}
+			switch lastStatus {
+			case "FAILED", "REJECTED", "BLOCKED", "ERROR":
+				return "", fmt.Errorf("init image moderation %s", strings.ToLower(lastStatus))
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	if lastStatus != "" {
+		return "", fmt.Errorf("timed out waiting for init image id (last status: %s)", lastStatus)
+	}
+	return "", fmt.Errorf("timed out waiting for init image moderation")
+}
+
+func parseUploadFields(fieldsJSON string) (map[string]string, error) {
 	var fields map[string]string
 	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
-		return fmt.Errorf("parse upload fields: %w", err)
+		return nil, fmt.Errorf("parse upload fields: %w", err)
 	}
 
-	// Build multipart form
-	var buf strings.Builder
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("upload fields were empty")
+	}
+
+	return fields, nil
+}
+
+func inferUploadFilename(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/png":
+		return "upload.png"
+	case "image/webp":
+		return "upload.webp"
+	case "image/gif":
+		return "upload.gif"
+	case "image/bmp":
+		return "upload.bmp"
+	case "image/tiff":
+		return "upload.tiff"
+	default:
+		return "upload.jpg"
+	}
+}
+
+func buildS3UploadBody(fields map[string]string, imageData []byte, contentType string) ([]byte, string) {
 	boundary := "----LeoUpload" + fmt.Sprintf("%d", time.Now().UnixNano())
+	var body bytes.Buffer
 
-	// Add fields from the presigned response
 	for k, v := range fields {
-		buf.WriteString("--" + boundary + "\r\n")
-		buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", k, v))
+		body.WriteString("--" + boundary + "\r\n")
+		body.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", k, v))
 	}
 
-	// Add key
-	buf.WriteString("--" + boundary + "\r\n")
-	buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"key\"\r\n\r\n%s\r\n", key))
-
-	// Add file
-	buf.WriteString("--" + boundary + "\r\n")
+	body.WriteString("--" + boundary + "\r\n")
 	if contentType == "" {
 		contentType = "image/jpeg"
 	}
-	buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"file\"; filename=\"upload.jpg\"\r\nContent-Type: %s\r\n\r\n", contentType))
+	body.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n", inferUploadFilename(contentType)))
+	body.WriteString(fmt.Sprintf("Content-Type: %s\r\n\r\n", contentType))
+	body.Write(imageData)
+	body.WriteString("\r\n--" + boundary + "--\r\n")
 
-	// Combine: prefix + binary data + suffix
-	prefix := []byte(buf.String())
-	suffix := []byte("\r\n--" + boundary + "--\r\n")
+	return body.Bytes(), boundary
+}
 
-	fullBody := make([]byte, 0, len(prefix)+len(imageData)+len(suffix))
-	fullBody = append(fullBody, prefix...)
-	fullBody = append(fullBody, imageData...)
-	fullBody = append(fullBody, suffix...)
+// UploadImageToS3 uploads the actual image data to the S3 presigned URL.
+// fieldsJSON is the JSON string returned by uploadImage, containing S3 form fields.
+func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData []byte, contentType string) error {
+	fields, err := parseUploadFields(fieldsJSON)
+	if err != nil {
+		return err
+	}
 
-	req, err := http.NewRequest("POST", uploadURL, strings.NewReader(string(fullBody)))
+	body, boundary := buildS3UploadBody(fields, imageData, contentType)
+
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -1316,10 +1316,14 @@ func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageD
 	if err != nil {
 		return "", fmt.Errorf("upload init failed: %w", err)
 	}
-	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, initResult.Key, imageData, contentType); err != nil {
+	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, imageData, contentType); err != nil {
 		return "", fmt.Errorf("s3 upload failed: %w", err)
 	}
-	return initResult.ID, nil
+	imageID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, 90*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("wait for init image failed: %w", err)
+	}
+	return imageID, nil
 }
 
 func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {
