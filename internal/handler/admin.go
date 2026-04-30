@@ -908,7 +908,11 @@ func (s *Server) HandleStubPost(w http.ResponseWriter, r *http.Request) {
 
 var startTime = time.Now()
 
-const maxRemoteImageBytes = 20 << 20
+const (
+	maxRemoteImageBytes     = 20 << 20
+	remoteImageFetchTimeout = 120 * time.Second
+	initImageLookupTimeout  = 180 * time.Second
+)
 
 func extractPathParam(path, prefix string) string {
 	trimmed := strings.TrimPrefix(path, prefix)
@@ -1319,7 +1323,7 @@ func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageD
 	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, imageData, contentType); err != nil {
 		return "", fmt.Errorf("s3 upload failed: %w", err)
 	}
-	imageID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, 90*time.Second)
+	imageID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, initImageLookupTimeout)
 	if err != nil {
 		return "", fmt.Errorf("wait for init image failed: %w", err)
 	}
@@ -1338,7 +1342,7 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 		parsedURL.RawPath = parsedURL.EscapedPath()
 	}
 
-	httpClient, err := s.newResourceHTTPClient(30 * time.Second)
+	httpClient, err := s.newResourceHTTPClient(remoteImageFetchTimeout)
 	if err != nil {
 		return nil, "", "", err
 	}

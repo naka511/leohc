@@ -27,6 +27,11 @@ const (
 	JWTMarginSec = 300 // JWT 过期前 5 分钟就刷新
 )
 
+const (
+	defaultClientTimeout = 120 * time.Second
+	defaultInitWait      = 180 * time.Second
+)
+
 // TokenSession holds a Leonardo session with cached JWT.
 type TokenSession struct {
 	mu            sync.RWMutex
@@ -67,7 +72,7 @@ func NewClient(proxy string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   30 * time.Second,
+			Timeout:   defaultClientTimeout,
 		},
 		proxy: proxy,
 	}
@@ -1060,7 +1065,7 @@ func (c *Client) WaitForInitImage(session *TokenSession, uploadID string, timeou
 		return "", fmt.Errorf("upload id is required")
 	}
 	if timeout <= 0 {
-		timeout = 90 * time.Second
+		timeout = defaultInitWait
 	}
 	if err := c.EnsureValidJWT(session); err != nil {
 		return "", fmt.Errorf("ensure JWT: %w", err)
