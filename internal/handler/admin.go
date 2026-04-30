@@ -271,12 +271,12 @@ func (s *Server) HandleLeonardoValidate(w http.ResponseWriter, r *http.Request) 
 	result := map[string]interface{}{
 		"ok": true,
 		"session": map[string]interface{}{
-			"email":         session.Email,
-			"cognito_sub":   session.CognitoSub,
+			"email":          session.Email,
+			"cognito_sub":    session.CognitoSub,
 			"hasura_user_id": session.HasuraUserID,
-			"jwt_valid":     session.IsJWTValid(),
-			"jwt_remaining": session.GetJWTRemainingSeconds(),
-			"jwt_expiry":    session.JWTExpiry.Format(time.RFC3339),
+			"jwt_valid":      session.IsJWTValid(),
+			"jwt_remaining":  session.GetJWTRemainingSeconds(),
+			"jwt_expiry":     session.JWTExpiry.Format(time.RFC3339),
 		},
 	}
 	if credits != nil {
@@ -377,7 +377,7 @@ func (s *Server) HandleTokenBatchAdd(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]interface{}{
-		"ok": true,
+		"ok":    true,
 		"added": added, "duplicates": duplicates, "failed": failed,
 		"added_count": added, "duplicate_count": duplicates, "failed_count": failed,
 	})
@@ -673,7 +673,6 @@ func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.ReqLog.Stats(rangeStr))
 }
 
-
 // HandleTokenCreditsRefresh handles POST /api/v1/tokens/{id}/credits/refresh.
 func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := s.requireAdmin(r); err != nil {
@@ -697,7 +696,7 @@ func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Reques
 	if platform == "leonardo" && s.LeonardoClient != nil {
 		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
 		if err != nil {
-			writeJSON(w, 400, map[string]interface{}{
+			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
 				"ok": false, "detail": "Leonardo积分刷新失败: " + err.Error(),
 			})
 			return
@@ -744,7 +743,7 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if platform == "leonardo" && s.LeonardoClient != nil {
 		session, credits, err := s.LeonardoClient.ValidateToken(tokenValue)
 		if err != nil {
-			writeJSON(w, 400, map[string]interface{}{
+			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
 				"ok": false, "detail": "Token刷新失败: " + err.Error(),
 			})
 			return
@@ -839,15 +838,15 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var body struct {
-		TokenID        string `json:"token_id"`
-		Prompt         string `json:"prompt"`
-		Model          string `json:"model"`
-		Mode           string `json:"mode"`
-		Duration       int    `json:"duration"`
-		Width          int    `json:"width"`
-		Height         int    `json:"height"`
-		Public         *bool  `json:"public,omitempty"` // default true
-		ImageGuidance  []struct {
+		TokenID       string `json:"token_id"`
+		Prompt        string `json:"prompt"`
+		Model         string `json:"model"`
+		Mode          string `json:"mode"`
+		Duration      int    `json:"duration"`
+		Width         int    `json:"width"`
+		Height        int    `json:"height"`
+		Public        *bool  `json:"public,omitempty"` // default true
+		ImageGuidance []struct {
 			ID       string `json:"id"`
 			Type     string `json:"type"`
 			Strength string `json:"strength"`
@@ -986,9 +985,9 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID)
 
 	writeJSON(w, 200, map[string]interface{}{
-		"ok":             true,
-		"generation_id":  result.GenerationID,
-		"credit_cost":    result.APICreditCost,
+		"ok":            true,
+		"generation_id": result.GenerationID,
+		"credit_cost":   result.APICreditCost,
 	})
 }
 
@@ -1282,3 +1281,13 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 	return nil, ""
 }
 
+func statusForLeonardoRefreshError(err error) int {
+	if err == nil {
+		return http.StatusBadRequest
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "rate limited") || strings.Contains(msg, "(429)") || strings.Contains(msg, "returned 429") {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusBadRequest
+}

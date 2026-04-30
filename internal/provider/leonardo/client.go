@@ -86,8 +86,8 @@ type jwtClaims struct {
 }
 
 type hasuraClaims struct {
-	UserID      string   `json:"x-hasura-user-id"`
-	DefaultRole string   `json:"x-hasura-default-role"`
+	UserID       string   `json:"x-hasura-user-id"`
+	DefaultRole  string   `json:"x-hasura-default-role"`
 	AllowedRoles []string `json:"x-hasura-allowed-roles"`
 }
 
@@ -209,11 +209,7 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 	}
 
 	if resp.StatusCode != 200 {
-		snippet := string(body)
-		if len(snippet) > 200 {
-			snippet = snippet[:200]
-		}
-		return fmt.Errorf("get-session returned %d: %s", resp.StatusCode, snippet)
+		return formatSessionHTTPError(resp.StatusCode, body)
 	}
 
 	// Parse response - Leonardo's get-session returns JSON with session info
@@ -254,6 +250,27 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 		session.Email, session.JWTExpiry.Format(time.RFC3339), session.HasuraUserID)
 
 	return nil
+}
+
+func formatSessionHTTPError(statusCode int, body []byte) error {
+	if statusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("Leonardo rate limited get-session (429). Wait a minute before retrying refresh")
+	}
+
+	snippet := strings.TrimSpace(string(body))
+	if snippet == "" {
+		return fmt.Errorf("get-session returned %d", statusCode)
+	}
+
+	snippetLower := strings.ToLower(snippet)
+	if strings.HasPrefix(snippetLower, "<!doctype html") || strings.HasPrefix(snippetLower, "<html") {
+		return fmt.Errorf("get-session returned %d with an HTML error page", statusCode)
+	}
+
+	if len(snippet) > 200 {
+		snippet = snippet[:200]
+	}
+	return fmt.Errorf("get-session returned %d: %s", statusCode, snippet)
 }
 
 // extractJWT tries to find the JWT in the session response.
@@ -549,32 +566,32 @@ type VideoRef struct {
 
 // GenerateRequest is the input for video generation.
 type GenerateRequest struct {
-	Model  string           `json:"model"`
-	Public bool             `json:"public"`
-	Params GenerateParams   `json:"parameters"`
+	Model  string         `json:"model"`
+	Public bool           `json:"public"`
+	Params GenerateParams `json:"parameters"`
 }
 
 // GenerateParams are the generation parameters.
 type GenerateParams struct {
 	Prompt         string     `json:"prompt"`
-	Mode           string     `json:"mode"`            // e.g. "RESOLUTION_720"
-	PromptEnhance  string     `json:"prompt_enhance"`  // "OFF" or "ON"
+	Mode           string     `json:"mode"`           // e.g. "RESOLUTION_720"
+	PromptEnhance  string     `json:"prompt_enhance"` // "OFF" or "ON"
 	Quantity       int        `json:"quantity"`
-	Duration       int        `json:"duration"`         // 4-15 seconds
+	Duration       int        `json:"duration"` // 4-15 seconds
 	MotionHasAudio bool       `json:"motion_has_audio"`
 	Width          int        `json:"width"`
 	Height         int        `json:"height"`
-	Seed           int        `json:"seed"`             // -1 for random
-	ImageRefs      []ImageRef `json:"image_refs,omitempty"`      // multi-image reference guidance
-	StartFrame     []FrameRef `json:"start_frame,omitempty"`     // start frame (first frame)
-	EndFrame       []FrameRef `json:"end_frame,omitempty"`       // end frame (last frame)
-	VideoRefs      []VideoRef `json:"video_refs,omitempty"`      // video reference guidance
+	Seed           int        `json:"seed"`                  // -1 for random
+	ImageRefs      []ImageRef `json:"image_refs,omitempty"`  // multi-image reference guidance
+	StartFrame     []FrameRef `json:"start_frame,omitempty"` // start frame (first frame)
+	EndFrame       []FrameRef `json:"end_frame,omitempty"`   // end frame (last frame)
+	VideoRefs      []VideoRef `json:"video_refs,omitempty"`  // video reference guidance
 }
 
 // GenerateResponse is the response from the Generate mutation.
 type GenerateResponse struct {
-	GenerationID   string `json:"generationId"`
-	APICreditCost  int    `json:"apiCreditCost"`
+	GenerationID  string `json:"generationId"`
+	APICreditCost int    `json:"apiCreditCost"`
 }
 
 // GenerationStatus holds the status of a generation.
@@ -585,22 +602,22 @@ type GenerationStatus struct {
 
 // GenerationDetail holds detailed generation info including video URLs.
 type GenerationDetail struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	Prompt     string `json:"prompt"`
-	ModelID    string `json:"modelId"`
-	Width      int    `json:"imageWidth"`
-	Height     int    `json:"imageHeight"`
-	CreatedAt  string `json:"createdAt"`
-	Images     []GeneratedImage `json:"generated_images"`
+	ID        string           `json:"id"`
+	Status    string           `json:"status"`
+	Prompt    string           `json:"prompt"`
+	ModelID   string           `json:"modelId"`
+	Width     int              `json:"imageWidth"`
+	Height    int              `json:"imageHeight"`
+	CreatedAt string           `json:"createdAt"`
+	Images    []GeneratedImage `json:"generated_images"`
 }
 
 // GeneratedImage holds info about a generated image/video.
 type GeneratedImage struct {
-	ID          string `json:"id"`
-	URL         string `json:"url"`
-	MotionMP4   string `json:"motionMP4URL"`
-	MotionGIF   string `json:"motionGIFURL"`
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	MotionMP4 string `json:"motionMP4URL"`
+	MotionGIF string `json:"motionGIFURL"`
 }
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
@@ -1079,4 +1096,3 @@ func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, key string
 	log.Printf("[Leonardo] Image uploaded to S3 successfully")
 	return nil
 }
-
