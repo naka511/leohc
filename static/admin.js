@@ -1752,6 +1752,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.success_count
         : payload?.added_count != null
           ? payload.added_count
+          : payload?.added != null
+            ? payload.added
           : 0
     );
     return Number.isFinite(value) ? value : 0;
@@ -1763,6 +1765,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.error_count
         : payload?.failed_count != null
           ? payload.failed_count
+          : payload?.failed != null
+            ? payload.failed
           : 0
     );
     return Number.isFinite(value) ? value : 0;
@@ -1774,6 +1778,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.duplicate_count
         : payload?.deduplicated_count != null
           ? payload.deduplicated_count
+          : payload?.duplicates != null
+            ? payload.duplicates
           : 0
     );
     return Number.isFinite(value) ? value : 0;

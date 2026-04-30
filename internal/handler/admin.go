@@ -185,9 +185,21 @@ func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]string{"detail": addErr.Error()})
 			return
 		}
-		// Try validation (best-effort, won't block save)
-		leoInfo := map[string]interface{}{"status": "saved_without_validation"}
+		// Validation must not block import, especially in Docker where outbound
+		// connectivity may differ from the host machine.
+		leoInfo := map[string]interface{}{
+			"status": "queued_for_validation",
+			"hint":   "Token saved. Validation will continue in the background.",
+		}
 		if s.LeonardoClient != nil {
+			if tokenID, _ := info["id"].(string); tokenID != "" {
+				go s.validateLeonardoTokenAsync(tokenID, body.Token)
+			}
+		} else {
+			leoInfo["status"] = "saved_without_validation"
+			leoInfo["hint"] = "Token saved without Leonardo validation. Refresh later when available."
+		}
+		if false && s.LeonardoClient != nil {
 			session, credits, err := s.LeonardoClient.ValidateToken(body.Token)
 			if err == nil && session != nil {
 				tokenID, _ := info["id"].(string)
@@ -213,7 +225,8 @@ func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]interface{}{
 			"ok": true, "token": info, "duplicate": duplicate,
-			"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate),
+			"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate), "failed": 0,
+			"added_count": boolToInt(!duplicate), "duplicate_count": boolToInt(duplicate), "failed_count": 0,
 			"leonardo": leoInfo,
 		})
 		return
@@ -226,7 +239,8 @@ func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]interface{}{
 		"ok": true, "token": info, "duplicate": duplicate,
-		"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate),
+		"added": boolToInt(!duplicate), "duplicates": boolToInt(duplicate), "failed": 0,
+		"added_count": boolToInt(!duplicate), "duplicate_count": boolToInt(duplicate), "failed_count": 0,
 	})
 }
 
@@ -363,8 +377,40 @@ func (s *Server) HandleTokenBatchAdd(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]interface{}{
-		"ok": true, "added": added, "duplicates": duplicates, "failed": failed,
+		"ok": true,
+		"added": added, "duplicates": duplicates, "failed": failed,
+		"added_count": added, "duplicate_count": duplicates, "failed_count": failed,
 	})
+}
+
+func (s *Server) validateLeonardoTokenAsync(tokenID, rawToken string) {
+	if s.LeonardoClient == nil || tokenID == "" || strings.TrimSpace(rawToken) == "" {
+		return
+	}
+
+	session, credits, err := s.LeonardoClient.ValidateToken(rawToken)
+	if err != nil {
+		log.Printf("[token] leonardo validation skipped for %s: %v", tokenID, err)
+		return
+	}
+	if session == nil {
+		return
+	}
+
+	if err := s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email); err != nil {
+		log.Printf("[token] failed to update Leonardo account info for %s: %v", tokenID, err)
+	}
+	if credits != nil {
+		totalCredits := float64(credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens)
+		if err := s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), totalCredits); err != nil {
+			log.Printf("[token] failed to update Leonardo credits for %s: %v", tokenID, err)
+		}
+	}
+	if err := s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix())); err != nil {
+		log.Printf("[token] failed to update Leonardo expiry for %s: %v", tokenID, err)
+	}
+
+	log.Printf("[token] leonardo validation completed for %s (%s)", tokenID, session.Email)
 }
 
 // HandleTokenDelete handles DELETE /api/v1/tokens/{id}.
