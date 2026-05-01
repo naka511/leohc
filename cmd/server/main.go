@@ -136,9 +136,18 @@ func main() {
 	mux.HandleFunc("/api/v1/logs/stats", srv.HandleLogsStats)
 	mux.HandleFunc("/api/v1/logs", srv.HandleLogs)
 
-	// ─── Refresh profiles (stubs) ───
-	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleStubPost)
+	// ─── Refresh profiles ───
+	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleImportCookieBatch)
 	mux.HandleFunc("/api/v1/refresh-profiles/export-cookies", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/refresh-profiles/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/import-cookie-jobs/") && r.Method == "GET":
+			srv.HandleImportCookieJob(w, r)
+		default:
+			http.Error(w, "not found", 404)
+		}
+	})
 	mux.HandleFunc("/api/v1/proxy/test", srv.HandleProxyTest)
 
 	// ─── Leonardo API ───

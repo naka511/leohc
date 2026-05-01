@@ -867,6 +867,334 @@ func (s *Server) HandleStubPost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "not yet implemented in Go backend"})
 }
 
+type cookieImportInput struct {
+	Name   string `json:"name"`
+	Cookie string `json:"cookie"`
+}
+
+type cookieImportJob struct {
+	ID                    string                   `json:"id"`
+	Status                string                   `json:"status"`
+	Total                 int                      `json:"total"`
+	SuccessCount          int                      `json:"success_count"`
+	ErrorCount            int                      `json:"error_count"`
+	DuplicateCount        int                      `json:"duplicate_count"`
+	RequestDuplicateCount int                      `json:"request_duplicate_count"`
+	ListDuplicateCount    int                      `json:"list_duplicate_count"`
+	OverwrittenCount      int                      `json:"overwritten_count"`
+	Items                 []map[string]interface{} `json:"items"`
+	BackgroundRefresh     map[string]interface{}   `json:"background_refresh"`
+	Timing                map[string]interface{}   `json:"timing,omitempty"`
+	StartedAt             time.Time                `json:"-"`
+}
+
+// HandleImportCookieBatch handles POST /api/v1/refresh-profiles/import-cookie-batch.
+func (s *Server) HandleImportCookieBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var body struct {
+		Items []cookieImportInput `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	inputs := make([]cookieImportInput, 0, len(body.Items))
+	for _, item := range body.Items {
+		cookie := normalizeImportedCookie(item.Cookie)
+		if cookie == "" {
+			continue
+		}
+		inputs = append(inputs, cookieImportInput{
+			Name:   strings.TrimSpace(item.Name),
+			Cookie: cookie,
+		})
+	}
+	if len(inputs) == 0 {
+		writeJSON(w, 400, map[string]string{"detail": "no valid cookie items found"})
+		return
+	}
+
+	job := newCookieImportJob(inputs)
+	s.saveCookieImportJob(job)
+	go s.runCookieImportJob(job.ID, inputs)
+
+	writeJSON(w, 200, s.snapshotCookieImportJob(job.ID))
+}
+
+// HandleImportCookieJob handles GET /api/v1/refresh-profiles/import-cookie-jobs/{id}.
+func (s *Server) HandleImportCookieJob(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	jobID := extractPathParam(r.URL.Path, "/api/v1/refresh-profiles/import-cookie-jobs/")
+	if jobID == "" {
+		writeJSON(w, 400, map[string]string{"detail": "job id required"})
+		return
+	}
+
+	payload := s.snapshotCookieImportJob(jobID)
+	if payload == nil {
+		writeJSON(w, 404, map[string]string{"detail": "job not found"})
+		return
+	}
+	writeJSON(w, 200, payload)
+}
+
+func normalizeImportedCookie(raw string) string {
+	value := strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(value), "cookie:") {
+		value = strings.TrimSpace(value[7:])
+	}
+	return value
+}
+
+func newCookieImportJob(inputs []cookieImportInput) *cookieImportJob {
+	jobID := fmt.Sprintf("cookie-%d", time.Now().UnixNano())
+	items := make([]map[string]interface{}, 0, len(inputs))
+	for idx, input := range inputs {
+		title := strings.TrimSpace(input.Name)
+		if title == "" {
+			title = fmt.Sprintf("Cookie #%d", idx+1)
+		}
+		items = append(items, map[string]interface{}{
+			"index":        idx,
+			"status":       "queued",
+			"profile_name": title,
+			"detail":       "等待导入",
+		})
+	}
+
+	return &cookieImportJob{
+		ID:        jobID,
+		Status:    "queued",
+		Total:     len(inputs),
+		Items:     items,
+		StartedAt: time.Now(),
+		BackgroundRefresh: map[string]interface{}{
+			"job_id":          jobID,
+			"total_count":     len(inputs),
+			"completed_count": 0,
+			"queued_count":    len(inputs),
+			"running_count":   0,
+			"completed":       false,
+		},
+	}
+}
+
+func (s *Server) saveCookieImportJob(job *cookieImportJob) {
+	s.cookieImportMu.Lock()
+	defer s.cookieImportMu.Unlock()
+	if s.cookieImportJobs == nil {
+		s.cookieImportJobs = make(map[string]*cookieImportJob)
+	}
+	s.cookieImportJobs[job.ID] = job
+}
+
+func (s *Server) snapshotCookieImportJob(jobID string) map[string]interface{} {
+	s.cookieImportMu.Lock()
+	defer s.cookieImportMu.Unlock()
+
+	job := s.cookieImportJobs[jobID]
+	if job == nil {
+		return nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(job.Items))
+	for _, item := range job.Items {
+		cloned := make(map[string]interface{}, len(item))
+		for k, v := range item {
+			cloned[k] = v
+		}
+		items = append(items, cloned)
+	}
+
+	background := make(map[string]interface{}, len(job.BackgroundRefresh))
+	for k, v := range job.BackgroundRefresh {
+		background[k] = v
+	}
+
+	payload := map[string]interface{}{
+		"status":                  job.Status,
+		"total":                   job.Total,
+		"success_count":           job.SuccessCount,
+		"error_count":             job.ErrorCount,
+		"duplicate_count":         job.DuplicateCount,
+		"request_duplicate_count": job.RequestDuplicateCount,
+		"list_duplicate_count":    job.ListDuplicateCount,
+		"overwritten_count":       job.OverwrittenCount,
+		"items":                   items,
+		"background_refresh":      background,
+	}
+	if len(job.Timing) > 0 {
+		timing := make(map[string]interface{}, len(job.Timing))
+		for k, v := range job.Timing {
+			timing[k] = v
+		}
+		payload["timing"] = timing
+	}
+	return payload
+}
+
+func (s *Server) runCookieImportJob(jobID string, inputs []cookieImportInput) {
+	seen := make(map[string]struct{}, len(inputs))
+
+	for idx, input := range inputs {
+		s.cookieImportMu.Lock()
+		job := s.cookieImportJobs[jobID]
+		if job == nil {
+			s.cookieImportMu.Unlock()
+			return
+		}
+		job.Status = "running"
+		job.Items[idx]["status"] = "running"
+		job.Items[idx]["detail"] = "正在导入并刷新"
+		job.BackgroundRefresh["running_count"] = 1
+		job.BackgroundRefresh["queued_count"] = maxInt(job.Total-idx-1, 0)
+		s.cookieImportMu.Unlock()
+
+		startedAt := time.Now()
+		status := "ok"
+		detail := "导入成功"
+		tokenID := ""
+		tokenAccountName := strings.TrimSpace(input.Name)
+		tokenAccountEmail := ""
+
+		if _, ok := seen[input.Cookie]; ok {
+			status = "skipped"
+			detail = "本次导入内重复，已跳过"
+			s.cookieImportMu.Lock()
+			job := s.cookieImportJobs[jobID]
+			if job != nil {
+				job.RequestDuplicateCount++
+				job.DuplicateCount++
+			}
+			s.cookieImportMu.Unlock()
+		} else {
+			seen[input.Cookie] = struct{}{}
+			info, duplicate, err := s.TokenMgr.Add(input.Cookie, "leonardo", "session_token", tokenAccountName, "", "cookie_import")
+			if err != nil {
+				status = "failed"
+				detail = "导入失败: " + err.Error()
+				s.cookieImportMu.Lock()
+				job := s.cookieImportJobs[jobID]
+				if job != nil {
+					job.ErrorCount++
+				}
+				s.cookieImportMu.Unlock()
+			} else {
+				tokenID, _ = info["id"].(string)
+				if duplicate {
+					status = "skipped"
+					detail = "Cookie 已存在于列表，已跳过"
+					s.cookieImportMu.Lock()
+					job := s.cookieImportJobs[jobID]
+					if job != nil {
+						job.ListDuplicateCount++
+						job.DuplicateCount++
+					}
+					s.cookieImportMu.Unlock()
+				} else if s.LeonardoClient == nil {
+					detail = "导入成功，当前未启用 Leonardo 刷新"
+					s.cookieImportMu.Lock()
+					job := s.cookieImportJobs[jobID]
+					if job != nil {
+						job.SuccessCount++
+					}
+					s.cookieImportMu.Unlock()
+				} else {
+					session, credits, err := s.validateLeonardoToken(tokenID, input.Cookie)
+					if err != nil {
+						status = "failed"
+						detail = "已导入，但刷新失败: " + err.Error()
+						if strings.Contains(strings.ToLower(err.Error()), "invalid") ||
+							strings.Contains(strings.ToLower(err.Error()), "expired") {
+							_ = s.TokenMgr.SetStatus(tokenID, "invalid")
+						} else {
+							_ = s.TokenMgr.SetStatus(tokenID, "error")
+						}
+						s.cookieImportMu.Lock()
+						job := s.cookieImportJobs[jobID]
+						if job != nil {
+							job.ErrorCount++
+						}
+						s.cookieImportMu.Unlock()
+					} else {
+						_ = s.TokenMgr.SetStatus(tokenID, "active")
+						_ = s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
+						_ = s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
+						tokenAccountEmail = strings.TrimSpace(session.Email)
+						if tokenAccountName == "" {
+							tokenAccountName = tokenAccountEmail
+						}
+						if credits != nil {
+							totalCredits := float64(credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens)
+							_ = s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), totalCredits)
+							detail = fmt.Sprintf("导入并刷新成功，剩余积分 %d", credits.TotalTokens)
+						} else {
+							detail = "导入并刷新成功"
+						}
+						s.cookieImportMu.Lock()
+						job := s.cookieImportJobs[jobID]
+						if job != nil {
+							job.SuccessCount++
+						}
+						s.cookieImportMu.Unlock()
+					}
+				}
+			}
+		}
+
+		elapsedMs := float64(time.Since(startedAt).Milliseconds())
+
+		s.cookieImportMu.Lock()
+		job = s.cookieImportJobs[jobID]
+		if job != nil {
+			job.Items[idx]["status"] = status
+			job.Items[idx]["detail"] = detail
+			job.Items[idx]["refresh_call_ms"] = elapsedMs
+			if tokenID != "" {
+				job.Items[idx]["token_id"] = tokenID
+				job.Items[idx]["profile_id"] = tokenID
+			}
+			if tokenAccountName != "" {
+				job.Items[idx]["token_account_name"] = tokenAccountName
+				job.Items[idx]["profile_name"] = tokenAccountName
+			}
+			if tokenAccountEmail != "" {
+				job.Items[idx]["token_account_email"] = tokenAccountEmail
+			}
+
+			completedCount := idx + 1
+			job.BackgroundRefresh["completed_count"] = completedCount
+			job.BackgroundRefresh["queued_count"] = maxInt(job.Total-completedCount, 0)
+			job.BackgroundRefresh["running_count"] = 0
+			job.BackgroundRefresh["completed"] = completedCount >= job.Total
+
+			switch {
+			case completedCount < job.Total:
+				job.Status = "running"
+			case job.ErrorCount > 0 && job.SuccessCount > 0:
+				job.Status = "partial"
+			case job.ErrorCount > 0:
+				job.Status = "failed"
+			default:
+				job.Status = "ok"
+			}
+			job.Timing = map[string]interface{}{
+				"total_ms": float64(time.Since(job.StartedAt).Milliseconds()),
+			}
+		}
+		s.cookieImportMu.Unlock()
+	}
+}
+
 var startTime = time.Now()
 
 const (
@@ -891,6 +1219,13 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ──────────────────────────────────────────────────────────
