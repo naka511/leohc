@@ -1430,10 +1430,12 @@ func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remo
 	if err != nil {
 		return "", 0, err
 	}
+	log.Printf("[Leonardo] Remote video fetched: url=%s contentType=%s ext=%s bytes=%d duration=%.3fs", remoteURL, contentType, ext, len(videoData), duration)
 	videoID, err := s.uploadLeonardoVideoBytes(session, videoData, ext, contentType)
 	if err != nil {
 		return "", 0, err
 	}
+	log.Printf("[Leonardo] Remote video uploaded: url=%s uploadID=%s duration=%.3fs", remoteURL, videoID, duration)
 	return videoID, duration, nil
 }
 
@@ -1460,6 +1462,7 @@ func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoD
 	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, videoData, contentType); err != nil {
 		return "", fmt.Errorf("s3 upload failed: %w", err)
 	}
+	log.Printf("[Leonardo] Video upload staged: uploadID=%s ext=%s contentType=%s bytes=%d", initResult.UploadID, ext, contentType, len(videoData))
 	return initResult.UploadID, nil
 }
 

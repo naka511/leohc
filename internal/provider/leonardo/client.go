@@ -1160,7 +1160,20 @@ func inferUploadFilename(contentType string) string {
 		return "upload.bmp"
 	case "image/tiff":
 		return "upload.tiff"
+	case "video/mp4":
+		return "upload.mp4"
+	case "video/quicktime":
+		return "upload.mov"
+	case "video/webm":
+		return "upload.webm"
+	case "video/x-msvideo":
+		return "upload.avi"
+	case "video/x-matroska":
+		return "upload.mkv"
 	default:
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "video/") {
+			return "upload.mp4"
+		}
 		return "upload.jpg"
 	}
 }
