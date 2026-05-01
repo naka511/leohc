@@ -1760,26 +1760,46 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 		return session, tokenID
 	}
 
-	// Otherwise find first available Leonardo token
-	tokens := s.TokenMgr.ListFull()
-	for _, t := range tokens {
-		platform, _ := t["platform"].(string)
-		status, _ := t["status"].(string)
-		if platform == "leonardo" && status == "active" {
-			rawToken, _ := t["value"].(string)
-			if rawToken == "" {
-				continue
-			}
-			foundID, _ := t["id"].(string)
-			session := s.getOrCreateLeonardoSession(foundID, rawToken)
-			if session == nil {
-				continue
-			}
-			if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
-				continue
-			}
-			return session, foundID
+	// Otherwise select an available Leonardo token using the configured rotation strategy.
+	strategy := "round_robin"
+	if s.Config != nil {
+		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
+	}
+
+	maxAttempts := s.TokenMgr.Count()
+	if maxAttempts < 1 {
+		return nil, ""
+	}
+	if strings.EqualFold(strategy, "random") {
+		maxAttempts *= 2
+	}
+
+	tried := make(map[string]bool)
+	for i := 0; i < maxAttempts; i++ {
+		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
+		if info == nil {
+			return nil, ""
 		}
+
+		foundID := strings.TrimSpace(toString(info["id"]))
+		if foundID == "" || tried[foundID] {
+			continue
+		}
+		tried[foundID] = true
+
+		rawToken := strings.TrimSpace(toString(info["value"]))
+		if rawToken == "" {
+			continue
+		}
+		session := s.getOrCreateLeonardoSession(foundID, rawToken)
+		if session == nil {
+			continue
+		}
+		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
+			continue
+		}
+		return session, foundID
 	}
 	return nil, ""
 }

@@ -258,6 +258,40 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	return chosen.Value
 }
 
+// GetAvailableTokenForPlatform returns the next available token info for a specific platform.
+func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := float64(time.Now().Unix())
+	var active []*Token
+	for _, t := range m.tokens {
+		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+			active = append(active, t)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+
+	var chosen *Token
+	switch strings.ToLower(strategy) {
+	case "random":
+		chosen = active[rand.Intn(len(active))]
+	default:
+		if m.rrIndex >= len(active) {
+			m.rrIndex = 0
+		}
+		chosen = active[m.rrIndex]
+		m.rrIndex++
+		if m.rrIndex >= len(active) {
+			m.rrIndex = 0
+		}
+	}
+	chosen.LastUsedAt = now
+	return tokenToMap(chosen)
+}
+
 // ReportSuccess marks a token as successfully used.
 func (m *Manager) ReportSuccess(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
