@@ -1425,6 +1425,36 @@ func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remo
 	return s.uploadLeonardoImageBytes(session, imageData, ext, contentType)
 }
 
+func isLeonardoS3PolicyExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Policy expired")
+}
+
+func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string) (*leonardo.UploadInitResult, error) {
+	const maxInitAttempts = 2
+
+	for attempt := 1; attempt <= maxInitAttempts; attempt++ {
+		initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+		if err != nil {
+			return nil, fmt.Errorf("upload init failed: %w", err)
+		}
+
+		err = s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, mediaData, contentType)
+		if err == nil {
+			return initResult, nil
+		}
+		if attempt < maxInitAttempts && isLeonardoS3PolicyExpired(err) {
+			log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket", mediaKind, initResult.UploadID)
+			continue
+		}
+		return nil, fmt.Errorf("s3 upload failed: %w", err)
+	}
+
+	return nil, fmt.Errorf("s3 upload failed: exhausted upload ticket refresh attempts")
+}
+
 func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remoteURL string) (string, float64, error) {
 	videoData, contentType, ext, duration, err := s.downloadRemoteVideo(remoteURL)
 	if err != nil {
@@ -1440,12 +1470,9 @@ func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remo
 }
 
 func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageData []byte, ext, contentType string) (string, error) {
-	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+	initResult, err := s.uploadLeonardoBytesToStaging(session, imageData, ext, contentType, "image")
 	if err != nil {
-		return "", fmt.Errorf("upload init failed: %w", err)
-	}
-	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, imageData, contentType); err != nil {
-		return "", fmt.Errorf("s3 upload failed: %w", err)
+		return "", err
 	}
 	imageID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, initImageLookupTimeout)
 	if err != nil {
@@ -1455,12 +1482,9 @@ func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageD
 }
 
 func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoData []byte, ext, contentType string) (string, error) {
-	initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+	initResult, err := s.uploadLeonardoBytesToStaging(session, videoData, ext, contentType, "video")
 	if err != nil {
-		return "", fmt.Errorf("upload init failed: %w", err)
-	}
-	if err := s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, videoData, contentType); err != nil {
-		return "", fmt.Errorf("s3 upload failed: %w", err)
+		return "", err
 	}
 	log.Printf("[Leonardo] Video upload staged: uploadID=%s ext=%s contentType=%s bytes=%d", initResult.UploadID, ext, contentType, len(videoData))
 
