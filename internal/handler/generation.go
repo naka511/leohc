@@ -368,15 +368,21 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 					}
 				}
 				if url != "" {
+					finalURL, materializeErr := s.materializeGeneratedMedia(url, result.GenerationID, "video")
+					if materializeErr != nil {
+						s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 502, fmt.Sprintf("save generated media failed: %v", materializeErr))
+						writeJSON(w, 500, errorResp(fmt.Sprintf("save generated media failed: %v", materializeErr), "server_error"))
+						return
+					}
 					if s.ReqLog != nil {
-						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, url, "video", "")
+						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, finalURL, "video", "")
 						s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 					}
 					s.TokenMgr.ReportSuccess(usedTokenID)
 					writeJSON(w, 200, map[string]interface{}{
 						"created": time.Now().Unix(),
 						"model":   modelID,
-						"data":    []map[string]interface{}{{"url": url}},
+						"data":    []map[string]interface{}{{"url": finalURL}},
 					})
 					return
 				}

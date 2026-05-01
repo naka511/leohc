@@ -1202,18 +1202,30 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 			for _, img := range detail.Images {
 				v := map[string]string{"id": img.ID}
 				if img.MotionMP4 != "" {
-					v["mp4_url"] = img.MotionMP4
+					finalMP4 := img.MotionMP4
+					if localURL, materializeErr := s.materializeGeneratedMedia(img.MotionMP4, genID, "video"); materializeErr == nil {
+						finalMP4 = localURL
+					} else {
+						log.Printf("[status] failed to materialize mp4 for %s: %v", genID, materializeErr)
+					}
+					v["mp4_url"] = finalMP4
 					if firstMP4 == "" {
-						firstMP4 = img.MotionMP4
+						firstMP4 = finalMP4
 					}
 				}
 				if img.MotionGIF != "" {
 					v["gif_url"] = img.MotionGIF
 				}
 				if img.URL != "" {
-					v["thumbnail_url"] = img.URL
+					finalThumb := img.URL
+					if localURL, materializeErr := s.materializeGeneratedMedia(img.URL, genID+"-thumb", "image"); materializeErr == nil {
+						finalThumb = localURL
+					} else {
+						log.Printf("[status] failed to materialize thumbnail for %s: %v", genID, materializeErr)
+					}
+					v["thumbnail_url"] = finalThumb
 					if firstThumb == "" {
-						firstThumb = img.URL
+						firstThumb = finalThumb
 					}
 				}
 				videos = append(videos, v)
@@ -1228,6 +1240,13 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 				if previewURL == "" {
 					previewURL = firstThumb
 					previewKind = "image"
+				}
+				if previewURL != "" {
+					if finalURL, materializeErr := s.materializeGeneratedMedia(previewURL, genID, previewKind); materializeErr == nil {
+						previewURL = finalURL
+					} else {
+						log.Printf("[status] failed to materialize generated media for %s: %v", genID, materializeErr)
+					}
 				}
 				s.ReqLog.UpdateByGenerationID(genID, "COMPLETE", 200, previewURL, previewKind, "")
 			}
@@ -1660,6 +1679,13 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 					if img.URL != "" && previewURL == "" {
 						previewURL = img.URL
 						previewKind = "image"
+					}
+				}
+				if previewURL != "" {
+					if finalURL, materializeErr := s.materializeGeneratedMedia(previewURL, genID, previewKind); materializeErr == nil {
+						previewURL = finalURL
+					} else {
+						log.Printf("[poll] failed to materialize generated media for %s: %v", genID, materializeErr)
 					}
 				}
 				if s.ReqLog != nil {
