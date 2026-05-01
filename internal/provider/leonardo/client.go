@@ -36,6 +36,20 @@ const (
 	s3UploadRetryDelay   = 2 * time.Second
 )
 
+func isRetryableGraphQLError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection reset")
+}
+
 // TokenSession holds a Leonardo session with cached JWT.
 type TokenSession struct {
 	mu            sync.RWMutex
@@ -1125,6 +1139,11 @@ func (c *Client) WaitForInitImage(session *TokenSession, uploadID string, timeou
 
 		body, err := c.doGraphQL(jwt, gqlReq)
 		if err != nil {
+			if isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Transient init image polling error for uploadID=%s: %v; retrying", uploadID, err)
+				time.Sleep(pollInterval)
+				continue
+			}
 			return "", err
 		}
 
@@ -1199,6 +1218,11 @@ func (c *Client) WaitForUploadedMedia(session *TokenSession, uploadID string, ti
 
 		body, err := c.doGraphQL(jwt, gqlReq)
 		if err != nil {
+			if isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Transient uploaded_media polling error for uploadID=%s: %v; retrying", uploadID, err)
+				time.Sleep(pollInterval)
+				continue
+			}
 			return nil, err
 		}
 

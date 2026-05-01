@@ -3,11 +3,13 @@ package handler
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	pathpkg "path"
@@ -920,6 +922,7 @@ const (
 	maxRemoteVideoBytes     = 100 << 20
 	remoteImageFetchTimeout = 120 * time.Second
 	initImageLookupTimeout  = 180 * time.Second
+	remoteFetchMaxAttempts  = 2
 )
 
 func extractPathParam(path, prefix string) string {
@@ -1432,6 +1435,20 @@ func isLeonardoS3PolicyExpired(err error) bool {
 	return strings.Contains(err.Error(), "Policy expired")
 }
 
+func isRetryableRemoteFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection reset")
+}
+
 func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string) (*leonardo.UploadInitResult, error) {
 	const maxInitAttempts = 2
 
@@ -1526,47 +1543,59 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 	req.Header.Set("User-Agent", "leo-go-image-fetch/1.0")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("fetch image url failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= remoteFetchMaxAttempts; attempt++ {
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(err) {
+				log.Printf("[Leonardo] Remote image fetch attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, err)
+				continue
+			}
+			return nil, "", "", fmt.Errorf("fetch image url failed: %w", err)
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", fmt.Errorf("image url returned %d", resp.StatusCode)
+		imageData, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRemoteImageBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(readErr) {
+				log.Printf("[Leonardo] Remote image read attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, readErr)
+				continue
+			}
+			return nil, "", "", fmt.Errorf("read image url failed: %w", readErr)
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, "", "", fmt.Errorf("image url returned %d", resp.StatusCode)
+		}
+		if len(imageData) == 0 {
+			return nil, "", "", fmt.Errorf("image url returned empty body")
+		}
+		if len(imageData) > maxRemoteImageBytes {
+			return nil, "", "", fmt.Errorf("image url exceeds %d MB limit", maxRemoteImageBytes>>20)
+		}
+
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+			contentType = mediaType
+		}
+		if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+			contentType = http.DetectContentType(imageData)
+		}
+		if !strings.HasPrefix(contentType, "image/") {
+			return nil, "", "", fmt.Errorf("image url did not return an image content type")
+		}
+
+		ext := imageExtFromContentType(contentType)
+		if ext == "" {
+			ext = imageExtFromURL(parsedURL.Path)
+		}
+		if ext == "" {
+			ext = "jpg"
+		}
+
+		return imageData, contentType, ext, nil
 	}
 
-	imageData, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteImageBytes+1))
-	if err != nil {
-		return nil, "", "", fmt.Errorf("read image url failed: %w", err)
-	}
-	if len(imageData) == 0 {
-		return nil, "", "", fmt.Errorf("image url returned empty body")
-	}
-	if len(imageData) > maxRemoteImageBytes {
-		return nil, "", "", fmt.Errorf("image url exceeds %d MB limit", maxRemoteImageBytes>>20)
-	}
-
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
-		contentType = mediaType
-	}
-	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
-		contentType = http.DetectContentType(imageData)
-	}
-	if !strings.HasPrefix(contentType, "image/") {
-		return nil, "", "", fmt.Errorf("image url did not return an image content type")
-	}
-
-	ext := imageExtFromContentType(contentType)
-	if ext == "" {
-		ext = imageExtFromURL(parsedURL.Path)
-	}
-	if ext == "" {
-		ext = "jpg"
-	}
-
-	return imageData, contentType, ext, nil
+	return nil, "", "", fmt.Errorf("fetch image url failed after %d attempt(s)", remoteFetchMaxAttempts)
 }
 
 func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, float64, error) {
@@ -1593,48 +1622,60 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 	req.Header.Set("User-Agent", "leo-go-video-fetch/1.0")
 	req.Header.Set("Accept", "video/*,*/*;q=0.8")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, "", "", 0, fmt.Errorf("fetch video url failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= remoteFetchMaxAttempts; attempt++ {
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(err) {
+				log.Printf("[Leonardo] Remote video fetch attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, err)
+				continue
+			}
+			return nil, "", "", 0, fmt.Errorf("fetch video url failed: %w", err)
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", 0, fmt.Errorf("video url returned %d", resp.StatusCode)
+		videoData, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRemoteVideoBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(readErr) {
+				log.Printf("[Leonardo] Remote video read attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, readErr)
+				continue
+			}
+			return nil, "", "", 0, fmt.Errorf("read video url failed: %w", readErr)
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, "", "", 0, fmt.Errorf("video url returned %d", resp.StatusCode)
+		}
+		if len(videoData) == 0 {
+			return nil, "", "", 0, fmt.Errorf("video url returned empty body")
+		}
+		if len(videoData) > maxRemoteVideoBytes {
+			return nil, "", "", 0, fmt.Errorf("video url exceeds %d MB limit", maxRemoteVideoBytes>>20)
+		}
+
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+			contentType = mediaType
+		}
+		if contentType == "" || !strings.HasPrefix(contentType, "video/") {
+			contentType = http.DetectContentType(videoData)
+		}
+		if !strings.HasPrefix(contentType, "video/") {
+			return nil, "", "", 0, fmt.Errorf("video url did not return a video content type")
+		}
+
+		ext := videoExtFromContentType(contentType)
+		if ext == "" {
+			ext = videoExtFromURL(parsedURL.Path)
+		}
+		if ext == "" {
+			ext = "mp4"
+		}
+
+		duration := detectRemoteVideoDuration(videoData, contentType, ext)
+		return videoData, contentType, ext, duration, nil
 	}
 
-	videoData, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteVideoBytes+1))
-	if err != nil {
-		return nil, "", "", 0, fmt.Errorf("read video url failed: %w", err)
-	}
-	if len(videoData) == 0 {
-		return nil, "", "", 0, fmt.Errorf("video url returned empty body")
-	}
-	if len(videoData) > maxRemoteVideoBytes {
-		return nil, "", "", 0, fmt.Errorf("video url exceeds %d MB limit", maxRemoteVideoBytes>>20)
-	}
-
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
-		contentType = mediaType
-	}
-	if contentType == "" || !strings.HasPrefix(contentType, "video/") {
-		contentType = http.DetectContentType(videoData)
-	}
-	if !strings.HasPrefix(contentType, "video/") {
-		return nil, "", "", 0, fmt.Errorf("video url did not return a video content type")
-	}
-
-	ext := videoExtFromContentType(contentType)
-	if ext == "" {
-		ext = videoExtFromURL(parsedURL.Path)
-	}
-	if ext == "" {
-		ext = "mp4"
-	}
-
-	duration := detectRemoteVideoDuration(videoData, contentType, ext)
-	return videoData, contentType, ext, duration, nil
+	return nil, "", "", 0, fmt.Errorf("fetch video url failed after %d attempt(s)", remoteFetchMaxAttempts)
 }
 
 func detectRemoteVideoDuration(videoData []byte, contentType, ext string) float64 {
