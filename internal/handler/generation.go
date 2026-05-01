@@ -22,7 +22,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		"owned_by":    "seedance",
 		"description": "Seedance 2.0 standard video generation",
 		"parameters": map[string]interface{}{
-			"duration": []int{5, 10, 15},
+			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
 			"size":     []string{"1280x720", "720x1280", "720x720"},
 		},
 	},
@@ -32,7 +32,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		"owned_by":    "seedance",
 		"description": "Seedance 2.0 fast video generation",
 		"parameters": map[string]interface{}{
-			"duration": []int{5, 10, 15},
+			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
 			"size":     []string{"1280x720", "720x1280", "720x720"},
 		},
 	},
@@ -130,6 +130,10 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	duration := 10
 	if d, ok := data["duration"].(float64); ok {
 		duration = int(d)
+	}
+	if duration < 4 || duration > 15 {
+		writeJSON(w, 400, errorResp("duration must be between 4 and 15 seconds", "invalid_request_error"))
+		return
 	}
 
 	// Parse size (e.g. "1280x720")
