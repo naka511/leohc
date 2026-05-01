@@ -260,12 +260,12 @@ Validated sample:
 }
 ```
 
-Multi-video reference:
+多视频参考：
 
-Use `video_reference` as an object array when you need more than one video reference.
-Do not send a plain `string[]`.
+当你需要同时传多个视频参考时，请使用 `video_reference` 对象数组。
+不要传纯 `string[]`。
 
-Example:
+请求示例：
 
 ```json
 {
@@ -284,7 +284,7 @@ Example:
 }
 ```
 
-If you already have Leonardo-side uploaded video IDs:
+如果你已经有 Leonardo 侧已上传的视频 ID：
 
 ```json
 {
@@ -305,7 +305,7 @@ If you already have Leonardo-side uploaded video IDs:
 }
 ```
 
-Validated multi-video sample:
+已验证成功的多视频样例：
 
 ```json
 {
