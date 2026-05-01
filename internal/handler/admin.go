@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1059,7 +1060,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	videoUploadCache := make(map[string]string)
 	var videoRefs []leonardo.VideoRef
 	for _, vr := range body.VideoReference {
-		videoID, err := s.resolveLeonardoVideoID(session, vr.ID, vr.URL, videoUploadCache)
+		videoRef, err := s.resolveLeonardoVideoRef(session, vr.ID, vr.URL, vr.Duration, videoUploadCache)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid video_reference entry: %v", err)})
 			return
@@ -1068,11 +1069,8 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		if refType == "" || (strings.TrimSpace(vr.ID) == "" && strings.TrimSpace(vr.URL) != "") {
 			refType = "UPLOADED"
 		}
-		videoRefs = append(videoRefs, leonardo.VideoRef{
-			ID:       videoID,
-			Type:     refType,
-			Duration: vr.Duration,
-		})
+		videoRef.Type = refType
+		videoRefs = append(videoRefs, videoRef)
 	}
 
 	// Default public to true (like Leonardo web client)
@@ -1368,7 +1366,7 @@ func (s *Server) resolveLeonardoVideoID(session *leonardo.TokenSession, id, remo
 		}
 	}
 
-	uploadedID, err := s.uploadLeonardoVideoFromURL(session, remoteURL)
+	uploadedID, _, err := s.uploadLeonardoVideoFromURL(session, remoteURL)
 	if err != nil {
 		return "", err
 	}
@@ -1376,6 +1374,47 @@ func (s *Server) resolveLeonardoVideoID(session *leonardo.TokenSession, id, remo
 		cache[remoteURL] = uploadedID
 	}
 	return uploadedID, nil
+}
+
+func (s *Server) resolveLeonardoVideoRef(session *leonardo.TokenSession, id, remoteURL string, durationHint float64, cache map[string]string) (leonardo.VideoRef, error) {
+	videoID := strings.TrimSpace(id)
+	if videoID != "" {
+		return leonardo.VideoRef{
+			ID:       videoID,
+			Type:     "UPLOADED",
+			Duration: durationHint,
+		}, nil
+	}
+
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		return leonardo.VideoRef{}, fmt.Errorf("either id or url is required")
+	}
+	if cache != nil {
+		if cachedID, ok := cache[remoteURL]; ok && cachedID != "" {
+			return leonardo.VideoRef{
+				ID:       cachedID,
+				Type:     "UPLOADED",
+				Duration: durationHint,
+			}, nil
+		}
+	}
+
+	uploadedID, detectedDuration, err := s.uploadLeonardoVideoFromURL(session, remoteURL)
+	if err != nil {
+		return leonardo.VideoRef{}, err
+	}
+	if cache != nil {
+		cache[remoteURL] = uploadedID
+	}
+	if durationHint <= 0 {
+		durationHint = detectedDuration
+	}
+	return leonardo.VideoRef{
+		ID:       uploadedID,
+		Type:     "UPLOADED",
+		Duration: durationHint,
+	}, nil
 }
 
 func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
@@ -1386,12 +1425,16 @@ func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remo
 	return s.uploadLeonardoImageBytes(session, imageData, ext, contentType)
 }
 
-func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
-	videoData, contentType, ext, err := s.downloadRemoteVideo(remoteURL)
+func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remoteURL string) (string, float64, error) {
+	videoData, contentType, ext, duration, err := s.downloadRemoteVideo(remoteURL)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return s.uploadLeonardoVideoBytes(session, videoData, ext, contentType)
+	videoID, err := s.uploadLeonardoVideoBytes(session, videoData, ext, contentType)
+	if err != nil {
+		return "", 0, err
+	}
+	return videoID, duration, nil
 }
 
 func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageData []byte, ext, contentType string) (string, error) {
@@ -1487,13 +1530,13 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 	return imageData, contentType, ext, nil
 }
 
-func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, error) {
+func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, float64, error) {
 	parsedURL, err := url.Parse(strings.TrimSpace(remoteURL))
 	if err != nil {
-		return nil, "", "", fmt.Errorf("invalid video url: %w", err)
+		return nil, "", "", 0, fmt.Errorf("invalid video url: %w", err)
 	}
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return nil, "", "", fmt.Errorf("video url must use http or https")
+		return nil, "", "", 0, fmt.Errorf("video url must use http or https")
 	}
 	if parsedURL.RawPath == "" {
 		parsedURL.RawPath = parsedURL.EscapedPath()
@@ -1501,35 +1544,35 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 
 	httpClient, err := s.newResourceHTTPClient(remoteImageFetchTimeout)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", 0, err
 	}
 
 	req, err := http.NewRequest("GET", parsedURL.String(), nil)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", 0, err
 	}
 	req.Header.Set("User-Agent", "leo-go-video-fetch/1.0")
 	req.Header.Set("Accept", "video/*,*/*;q=0.8")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("fetch video url failed: %w", err)
+		return nil, "", "", 0, fmt.Errorf("fetch video url failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", fmt.Errorf("video url returned %d", resp.StatusCode)
+		return nil, "", "", 0, fmt.Errorf("video url returned %d", resp.StatusCode)
 	}
 
 	videoData, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteVideoBytes+1))
 	if err != nil {
-		return nil, "", "", fmt.Errorf("read video url failed: %w", err)
+		return nil, "", "", 0, fmt.Errorf("read video url failed: %w", err)
 	}
 	if len(videoData) == 0 {
-		return nil, "", "", fmt.Errorf("video url returned empty body")
+		return nil, "", "", 0, fmt.Errorf("video url returned empty body")
 	}
 	if len(videoData) > maxRemoteVideoBytes {
-		return nil, "", "", fmt.Errorf("video url exceeds %d MB limit", maxRemoteVideoBytes>>20)
+		return nil, "", "", 0, fmt.Errorf("video url exceeds %d MB limit", maxRemoteVideoBytes>>20)
 	}
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
@@ -1540,7 +1583,7 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 		contentType = http.DetectContentType(videoData)
 	}
 	if !strings.HasPrefix(contentType, "video/") {
-		return nil, "", "", fmt.Errorf("video url did not return a video content type")
+		return nil, "", "", 0, fmt.Errorf("video url did not return a video content type")
 	}
 
 	ext := videoExtFromContentType(contentType)
@@ -1551,7 +1594,99 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 		ext = "mp4"
 	}
 
-	return videoData, contentType, ext, nil
+	duration := detectRemoteVideoDuration(videoData, contentType, ext)
+	return videoData, contentType, ext, duration, nil
+}
+
+func detectRemoteVideoDuration(videoData []byte, contentType, ext string) float64 {
+	normalizedExt := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
+	if normalizedExt != "mp4" && normalizedExt != "m4v" && normalizedExt != "mov" && !strings.Contains(strings.ToLower(contentType), "mp4") && !strings.Contains(strings.ToLower(contentType), "quicktime") {
+		return 0
+	}
+
+	duration, err := parseISOBMFFDuration(videoData)
+	if err != nil || duration <= 0 {
+		return 0
+	}
+	return duration
+}
+
+func parseISOBMFFDuration(data []byte) (float64, error) {
+	moov, err := findISOBMFFBox(data, "moov")
+	if err != nil {
+		return 0, err
+	}
+	mvhd, err := findISOBMFFBox(moov, "mvhd")
+	if err != nil {
+		return 0, err
+	}
+	if len(mvhd) < 20 {
+		return 0, fmt.Errorf("mvhd box too short")
+	}
+
+	version := mvhd[0]
+	switch version {
+	case 0:
+		if len(mvhd) < 20 {
+			return 0, fmt.Errorf("mvhd version 0 too short")
+		}
+		timescale := binary.BigEndian.Uint32(mvhd[12:16])
+		duration := binary.BigEndian.Uint32(mvhd[16:20])
+		if timescale == 0 {
+			return 0, fmt.Errorf("mvhd timescale is zero")
+		}
+		return float64(duration) / float64(timescale), nil
+	case 1:
+		if len(mvhd) < 32 {
+			return 0, fmt.Errorf("mvhd version 1 too short")
+		}
+		timescale := binary.BigEndian.Uint32(mvhd[20:24])
+		duration := binary.BigEndian.Uint64(mvhd[24:32])
+		if timescale == 0 {
+			return 0, fmt.Errorf("mvhd timescale is zero")
+		}
+		return float64(duration) / float64(timescale), nil
+	default:
+		return 0, fmt.Errorf("unsupported mvhd version %d", version)
+	}
+}
+
+func findISOBMFFBox(data []byte, target string) ([]byte, error) {
+	for offset := 0; offset+8 <= len(data); {
+		size := uint64(binary.BigEndian.Uint32(data[offset : offset+4]))
+		boxType := string(data[offset+4 : offset+8])
+		headerSize := 8
+		if size == 1 {
+			if offset+16 > len(data) {
+				return nil, fmt.Errorf("truncated large box header")
+			}
+			size = binary.BigEndian.Uint64(data[offset+8 : offset+16])
+			headerSize = 16
+		} else if size == 0 {
+			size = uint64(len(data) - offset)
+		}
+		if size < uint64(headerSize) {
+			return nil, fmt.Errorf("invalid box size for %s", boxType)
+		}
+
+		end := offset + int(size)
+		if end > len(data) {
+			return nil, fmt.Errorf("box %s extends past data", boxType)
+		}
+
+		payload := data[offset+headerSize : end]
+		if boxType == target {
+			return payload, nil
+		}
+		if boxType == "moov" || boxType == "trak" || boxType == "mdia" || boxType == "minf" || boxType == "stbl" || boxType == "edts" || boxType == "udta" || boxType == "meta" {
+			if nested, err := findISOBMFFBox(payload, target); err == nil {
+				return nested, nil
+			}
+		}
+
+		offset = end
+	}
+	return nil, fmt.Errorf("box %s not found", target)
 }
 
 func (s *Server) newResourceHTTPClient(timeout time.Duration) (*http.Client, error) {

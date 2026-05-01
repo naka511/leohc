@@ -213,6 +213,8 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
+当使用 `video_url` 或 `video_reference[].url` 时，服务会在上传远程视频后尽量自动解析源视频时长，并一并传给 Leonardo 的 `video_reference_base[].video.duration`，以更贴近 Leonardo Web 端的实际请求格式。
+
 如果你已经有 Leonardo 侧的视频参考 ID，也可以显式写 `video_reference`：
 
 ```bash
@@ -233,6 +235,8 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     ]
   }'
 ```
+
+如果你直接传的是 Leonardo 侧已有的 `id`，推荐同时补上 `duration`，这样可以和上游成功负载保持一致。
 
 ### 2.5 图片 + 视频混合参考生成视频
 

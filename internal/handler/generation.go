@@ -526,14 +526,11 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	}
 
 	if videoURL := strings.TrimSpace(toString(data["video_url"])); videoURL != "" {
-		videoID, err := s.resolveLeonardoVideoID(session, "", videoURL, uploadCache)
+		videoRef, err := s.resolveLeonardoVideoRef(session, "", videoURL, 0, uploadCache)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("invalid video_url: %w", err)
 		}
-		videoRefs = append(videoRefs, leonardo.VideoRef{
-			ID:   videoID,
-			Type: "UPLOADED",
-		})
+		videoRefs = append(videoRefs, videoRef)
 	}
 
 	if rawVideos, ok := data["video_reference"].([]interface{}); ok {
@@ -541,7 +538,14 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			entry, _ := item.(map[string]interface{})
 			rawID := toString(entry["id"])
 			rawURL := toString(entry["url"])
-			videoID, err := s.resolveLeonardoVideoID(session, rawID, rawURL, uploadCache)
+			var durationHint float64
+			switch durationValue := entry["duration"].(type) {
+			case float64:
+				durationHint = durationValue
+			case int:
+				durationHint = float64(durationValue)
+			}
+			videoRef, err := s.resolveLeonardoVideoRef(session, rawID, rawURL, durationHint, uploadCache)
 			if err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: %w", idx, err)
 			}
@@ -549,16 +553,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
 				refType = "UPLOADED"
 			}
-			videoRef := leonardo.VideoRef{
-				ID:   videoID,
-				Type: refType,
-			}
-			switch durationValue := entry["duration"].(type) {
-			case float64:
-				videoRef.Duration = durationValue
-			case int:
-				videoRef.Duration = float64(durationValue)
-			}
+			videoRef.Type = refType
 			videoRefs = append(videoRefs, videoRef)
 		}
 	}
