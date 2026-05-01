@@ -260,6 +260,70 @@ Validated sample:
 }
 ```
 
+Multi-video reference:
+
+Use `video_reference` as an object array when you need more than one video reference.
+Do not send a plain `string[]`.
+
+Example:
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "seedance-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "url": "https://example.com/video-1.mp4"
+    },
+    {
+      "url": "https://example.com/video-2.mp4"
+    }
+  ]
+}
+```
+
+If you already have Leonardo-side uploaded video IDs:
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "seedance-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "id": "LEONARDO_VIDEO_ID_1",
+      "duration": 4.041667
+    },
+    {
+      "id": "LEONARDO_VIDEO_ID_2",
+      "duration": 3.833333
+    }
+  ]
+}
+```
+
+Validated multi-video sample:
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "seedance-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "url": "https://img688.com/file/1777622416553_327f3b9260c941aaa24fbc691e8aa0db.mp4"
+    },
+    {
+      "url": "https://img688.com/file/1777626569686_11d4b80b6ddb4c3f40793f68f0ae516a.mp4"
+    }
+  ]
+}
+```
+
 ### 2.5 图片 + 视频混合参考生成视频
 
 如果要同时传图片参考和视频参考，推荐使用 `image_guidance + video_reference` 这一组字段。
