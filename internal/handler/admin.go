@@ -1435,7 +1435,7 @@ func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remo
 	if err != nil {
 		return "", 0, err
 	}
-	log.Printf("[Leonardo] Remote video uploaded: url=%s uploadID=%s duration=%.3fs", remoteURL, videoID, duration)
+	log.Printf("[Leonardo] Remote video uploaded: url=%s videoID=%s duration=%.3fs", remoteURL, videoID, duration)
 	return videoID, duration, nil
 }
 
@@ -1464,15 +1464,18 @@ func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoD
 	}
 	log.Printf("[Leonardo] Video upload staged: uploadID=%s ext=%s contentType=%s bytes=%d", initResult.UploadID, ext, contentType, len(videoData))
 
-	// Leonardo's web app references a ready UPLOADED asset ID for video guidance.
-	// We mirror that behavior here by waiting for the staged upload to resolve to
-	// a usable asset ID before submitting generation.
-	videoID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, initImageLookupTimeout)
+	// Leonardo's web flow waits for uploaded_media to reach COMPLETE before
+	// reusing the staged upload as a video guidance asset.
+	uploadedMedia, err := s.LeonardoClient.WaitForUploadedMedia(session, initResult.UploadID, initImageLookupTimeout)
 	if err != nil {
 		return "", fmt.Errorf("wait for staged video asset failed: %w", err)
 	}
-	log.Printf("[Leonardo] Video upload ready: uploadID=%s videoID=%s", initResult.UploadID, videoID)
-	return videoID, nil
+	videoDuration := 0.0
+	if uploadedMedia.Duration != nil {
+		videoDuration = *uploadedMedia.Duration
+	}
+	log.Printf("[Leonardo] Video upload ready: uploadID=%s status=%s width=%v height=%v duration=%.3fs url=%s", initResult.UploadID, uploadedMedia.Status, uploadedMedia.Width, uploadedMedia.Height, videoDuration, uploadedMedia.URL)
+	return initResult.UploadID, nil
 }
 
 func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {

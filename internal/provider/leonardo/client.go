@@ -996,6 +996,23 @@ const initImageModerationQuery = `query GetInitImageModeration($akUUID: uuid!) {
   }
 }`
 
+const uploadedMediaByIDQuery = `query GetUploadedMediaById($uploadId: uuid!) {
+  uploaded_media(where: {id: {_eq: $uploadId}}, limit: 1) {
+    duration
+    fileSize
+    height
+    id
+    status
+    statusReason
+    thumbnailUrl
+    url
+    video_fps
+    videoCodec
+    width
+    __typename
+  }
+}`
+
 // UploadInitResult holds the response from the upload init mutation.
 type UploadInitResult struct {
 	UploadID string `json:"uploadId"`
@@ -1007,6 +1024,20 @@ type InitImageModeration struct {
 	AKUUID      string `json:"akUUID"`
 	InitImageID string `json:"initImageId"`
 	CheckStatus string `json:"checkStatus"`
+}
+
+type UploadedMedia struct {
+	ID           string   `json:"id"`
+	Status       string   `json:"status"`
+	StatusReason *string  `json:"statusReason"`
+	URL          string   `json:"url"`
+	ThumbnailURL *string  `json:"thumbnailUrl"`
+	Duration     *float64 `json:"duration"`
+	FileSize     *int64   `json:"fileSize"`
+	Height       *int     `json:"height"`
+	Width        *int     `json:"width"`
+	VideoFPS     *float64 `json:"video_fps"`
+	VideoCodec   *string  `json:"videoCodec"`
 }
 
 // UploadInitImage initializes an image upload slot on Leonardo.
@@ -1133,6 +1164,87 @@ func (c *Client) WaitForInitImage(session *TokenSession, uploadID string, timeou
 		return "", fmt.Errorf("timed out waiting for init image id (last status: %s)", lastStatus)
 	}
 	return "", fmt.Errorf("timed out waiting for init image moderation")
+}
+
+// WaitForUploadedMedia polls the uploaded_media table until the staged upload
+// becomes a usable video asset with COMPLETE status.
+func (c *Client) WaitForUploadedMedia(session *TokenSession, uploadID string, timeout time.Duration) (*UploadedMedia, error) {
+	if strings.TrimSpace(uploadID) == "" {
+		return nil, fmt.Errorf("upload id is required")
+	}
+	if timeout <= 0 {
+		timeout = defaultInitWait
+	}
+	if err := c.EnsureValidJWT(session); err != nil {
+		return nil, fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollInterval := 1500 * time.Millisecond
+	lastStatus := ""
+	lastReason := ""
+
+	for time.Now().Before(deadline) {
+		session.mu.RLock()
+		jwt := session.JWT
+		session.mu.RUnlock()
+
+		gqlReq := graphqlRequest{
+			OperationName: "GetUploadedMediaById",
+			Variables: map[string]interface{}{
+				"uploadId": uploadID,
+			},
+			Query: uploadedMediaByIDQuery,
+		}
+
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			return nil, err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				UploadedMedia []UploadedMedia `json:"uploaded_media"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse uploaded media response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("uploaded media query error: %s", gqlResp.Errors[0].Message)
+		}
+
+		if len(gqlResp.Data.UploadedMedia) > 0 {
+			item := gqlResp.Data.UploadedMedia[0]
+			lastStatus = strings.ToUpper(strings.TrimSpace(item.Status))
+			if item.StatusReason != nil {
+				lastReason = strings.TrimSpace(*item.StatusReason)
+			}
+			switch lastStatus {
+			case "COMPLETE", "COMPLETED", "READY":
+				return &item, nil
+			case "FAILED", "REJECTED", "BLOCKED", "ERROR":
+				if lastReason != "" {
+					return nil, fmt.Errorf("uploaded media %s: %s", strings.ToLower(lastStatus), lastReason)
+				}
+				return nil, fmt.Errorf("uploaded media %s", strings.ToLower(lastStatus))
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	if lastStatus != "" {
+		if lastReason != "" {
+			return nil, fmt.Errorf("timed out waiting for uploaded media completion (last status: %s, reason: %s)", lastStatus, lastReason)
+		}
+		return nil, fmt.Errorf("timed out waiting for uploaded media completion (last status: %s)", lastStatus)
+	}
+	return nil, fmt.Errorf("timed out waiting for uploaded media")
 }
 
 func parseUploadFields(fieldsJSON string) (map[string]string, error) {
