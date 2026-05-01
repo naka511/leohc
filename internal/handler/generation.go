@@ -40,13 +40,18 @@ var openAIModelCatalog = []map[string]interface{}{
 
 // Server holds all dependencies for HTTP handlers.
 type Server struct {
-	TokenMgr       *token.Manager
-	Config         *config.Manager
-	GeneratedDir   string
-	LeonardoClient *leonardo.Client
-	ReqLog         *reqlog.Store
-	leoSessionMu   sync.Mutex
-	leoSessions    map[string]*leonardo.TokenSession
+	TokenMgr                *token.Manager
+	Config                  *config.Manager
+	GeneratedDir            string
+	LeonardoClient          *leonardo.Client
+	ReqLog                  *reqlog.Store
+	leoSessionMu            sync.Mutex
+	leoSessions             map[string]*leonardo.TokenSession
+	autoRefreshMu           sync.Mutex
+	autoRefreshRun          map[string]time.Time
+	autoRefreshBusy         map[string]bool
+	autoRefreshLoopStarted  bool
+	autoRefreshSweepRunning bool
 }
 
 // requireAPIKey validates the X-API-Key or Authorization header.

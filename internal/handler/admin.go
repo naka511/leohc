@@ -805,6 +805,7 @@ func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		// Update token credits and expiry in the pool
+		s.TokenMgr.SetStatus(tokenID, "active")
 		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
 		s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
@@ -852,6 +853,7 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Update token info in the pool
+		s.TokenMgr.SetStatus(tokenID, "active")
 		if credits != nil {
 			s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		}
@@ -891,6 +893,9 @@ func (s *Server) HandleTokenAutoRefresh(w http.ResponseWriter, r *http.Request) 
 	if err := s.TokenMgr.SetAutoRefresh(tokenID, enabled); err != nil {
 		writeJSON(w, 404, map[string]string{"detail": err.Error()})
 		return
+	}
+	if enabled {
+		s.triggerTokenAutoRefresh(tokenID)
 	}
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":           true,

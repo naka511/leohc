@@ -71,6 +71,7 @@ func main() {
 		LeonardoClient: leoClient,
 		ReqLog:         reqLogStore,
 	}
+	srv.StartTokenAutoRefreshLoop()
 
 	mux := http.NewServeMux()
 
