@@ -94,7 +94,6 @@ func main() {
 	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleStubPost)
 	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleStubPost)
 	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/credits/refresh-batch", srv.HandleStubPost)
 	mux.HandleFunc("/api/v1/tokens/success-counts/overwrite-from-logs", srv.HandleStubPost)
 
 	// Token CRUD (must be after more specific /tokens/xxx routes)
@@ -105,8 +104,6 @@ func main() {
 			srv.HandleTokenStatus(w, r)
 		case strings.HasSuffix(path, "/refresh") && r.Method == "POST":
 			srv.HandleTokenRefresh(w, r)
-		case strings.HasSuffix(path, "/credits/refresh") && r.Method == "POST":
-			srv.HandleTokenCreditsRefresh(w, r)
 		case strings.HasSuffix(path, "/auto-refresh") && r.Method == "PUT":
 			srv.HandleTokenAutoRefresh(w, r)
 		case strings.Contains(path, "/refresh-jobs/"):

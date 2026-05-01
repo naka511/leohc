@@ -80,7 +80,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const taskReportCurrent = document.getElementById("taskReportCurrent");
   const taskReportItems = document.getElementById("taskReportItems");
   const refreshBtn = document.getElementById("refreshBtn");
-  const refreshCreditsBatchBtn = document.getElementById("refreshCreditsBatchBtn");
   const tokenSelectAll = document.getElementById("tokenSelectAll");
   const tbody = document.querySelector("#tokenTable tbody");
   const tokenTotalCount = document.getElementById("tokenTotalCount");
@@ -378,7 +377,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         : `<button class="action-mini" onclick="toggleToken('${t.id}', '${isStatusActive ? 'disabled' : 'active'}')">${isStatusActive ? '禁用Token' : '启用Token'}</button>`;
       const actionsGrid = `
         <div class="action-btns">
-          <button class="action-mini" onclick="refreshTokenCredits('${t.id}')">刷新积分</button>
           ${refreshTokenBtn}
           ${statusBtn}
           <button class="action-mini danger" onclick="deleteToken('${t.id}')">删除Token</button>
@@ -662,30 +660,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   };
 
-  window.refreshTokenCredits = async (id) => {
-    showToast("Token 积分刷新中...", false, { duration: 0 });
-    try {
-      const res = await fetch(`/api/v1/tokens/${id}/credits/refresh`, { method: "POST" });
-      if (!res.ok) {
-        let detail = "刷新积分失败";
-        try {
-          const body = await res.json();
-          detail = body.detail || JSON.stringify(body);
-        } catch (_) {
-          detail = await res.text();
-        }
-        alert(detail || "刷新积分失败");
-        showToast(`刷新积分失败：${detail || "unknown error"}`, true);
-        return;
-      }
-      await loadTokens();
-      showToast("Token 积分刷新成功", false);
-    } catch (err) {
-      alert("刷新积分失败");
-      showToast("Token 积分刷新失败", true);
-    }
-  };
-
   window.toggleAutoRefresh = async (id, enabled) => {
     try {
       const res = await fetch(`/api/v1/tokens/${id}/auto-refresh?enabled=${enabled ? "true" : "false"}`, {
@@ -862,40 +836,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       } finally {
         checkInvalidTokensBatchBtn.disabled = false;
         updateTokenSelectionSummary();
-      }
-    });
-  }
-
-  if (refreshCreditsBatchBtn) {
-    refreshCreditsBatchBtn.addEventListener("click", async () => {
-      refreshCreditsBatchBtn.disabled = true;
-      showToast("批量刷新积分中...", false, { duration: 0 });
-      try {
-        const res = await fetch("/api/v1/tokens/credits/refresh-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        if (!res.ok) {
-          let detail = "批量刷新积分失败";
-          try {
-            const body = await res.json();
-            detail = body.detail || JSON.stringify(body);
-          } catch (_) {
-            detail = await res.text();
-          }
-          showToast(`批量刷新积分失败：${detail || "unknown error"}`, true);
-          return;
-        }
-        const data = await res.json();
-        const ok = Number(data.refreshed_count || 0);
-        const fail = Number(data.failed_count || 0);
-        showToast(`批量刷新完成：成功 ${ok}，失败 ${fail}`, false);
-        await loadTokens();
-      } catch (err) {
-        showToast("批量刷新积分失败", true);
-      } finally {
-        refreshCreditsBatchBtn.disabled = false;
       }
     });
   }

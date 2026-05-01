@@ -226,7 +226,7 @@ func (s *Server) HandleTokenAdd(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				leoInfo["error"] = err.Error()
-				leoInfo["hint"] = "Token已保存，请稍后点击「刷新积分」获取账号信息"
+				leoInfo["hint"] = "Token已保存，请稍后点击「刷新Token」获取账号信息"
 			}
 		}
 		writeJSON(w, 200, map[string]interface{}{
@@ -777,54 +777,6 @@ func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, s.ReqLog.Stats(rangeStr))
-}
-
-// HandleTokenCreditsRefresh handles POST /api/v1/tokens/{id}/credits/refresh.
-func (s *Server) HandleTokenCreditsRefresh(w http.ResponseWriter, r *http.Request) {
-	if err := s.requireAdmin(r); err != nil {
-		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
-		return
-	}
-	// Extract token ID from path: /api/v1/tokens/{id}/credits/refresh
-	path := r.URL.Path
-	trimmed := strings.TrimPrefix(path, "/api/v1/tokens/")
-	parts := strings.SplitN(trimmed, "/", 2)
-	tokenID := parts[0]
-
-	tokenInfo := s.TokenMgr.GetByID(tokenID)
-	if tokenInfo == nil {
-		writeJSON(w, 404, map[string]string{"detail": "token not found"})
-		return
-	}
-	platform, _ := tokenInfo["platform"].(string)
-	tokenValue, _ := tokenInfo["value"].(string)
-
-	if platform == "leonardo" && s.LeonardoClient != nil {
-		session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
-		if err != nil {
-			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
-				"ok": false, "detail": "Leonardo积分刷新失败: " + err.Error(),
-			})
-			return
-		}
-		// Update token credits and expiry in the pool
-		s.TokenMgr.SetStatus(tokenID, "active")
-		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
-		s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
-		s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
-		writeJSON(w, 200, map[string]interface{}{
-			"ok":                true,
-			"credits_available": credits.TotalTokens,
-			"credits_total":     credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens,
-			"plan":              credits.Plan,
-			"email":             session.Email,
-			"jwt_remaining":     session.GetJWTRemainingSeconds(),
-		})
-		return
-	}
-
-	// For non-Leonardo tokens, return stub
-	writeJSON(w, 200, map[string]interface{}{"ok": true, "message": "credits refresh not supported for this platform"})
 }
 
 // HandleTokenRefresh handles POST /api/v1/tokens/{id}/refresh.
