@@ -244,6 +244,22 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 - 如果你直接传的是 Leonardo 侧已有的 `video_reference[].id`，推荐同时显式补上 `video_reference[].duration`
 
 
+Implementation note:
+- For `video_url` and `video_reference[].url`, the service downloads the remote mp4, calls Leonardo `UploadImage(uploadType=INIT, extension=mp4)`, uploads to S3, polls `uploaded_media`, waits for `status = COMPLETE`, and then reuses that upload as the video reference for `Generate`.
+- The top-level `duration` is the generated result duration, while `video_reference[].duration` is the source reference video duration.
+- For `video_url` and `video_reference[].url`, the service also waits for `uploaded_media.status = COMPLETE` before starting generation.
+
+Validated sample:
+```json
+{
+  "prompt": "广告视频",
+  "model": "seedance-2.0-fast",
+  "duration": 4,
+  "size": "720x1280",
+  "video_url": "https://img688.com/file/1777636472339_0430.mp4"
+}
+```
+
 ### 2.5 图片 + 视频混合参考生成视频
 
 如果要同时传图片参考和视频参考，推荐使用 `image_guidance + video_reference` 这一组字段。
@@ -353,8 +369,8 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
     "prompt": "广告视频",
     "model": "seedance-2.0-fast",
     "duration": 4,
-    "width": 1280,
-    "height": 720,
+    "width": 720,
+    "height": 1280,
     "video_reference": [
       {
         "url": "https://example.com/source.mp4",
