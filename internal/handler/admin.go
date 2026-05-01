@@ -1463,7 +1463,16 @@ func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoD
 		return "", fmt.Errorf("s3 upload failed: %w", err)
 	}
 	log.Printf("[Leonardo] Video upload staged: uploadID=%s ext=%s contentType=%s bytes=%d", initResult.UploadID, ext, contentType, len(videoData))
-	return initResult.UploadID, nil
+
+	// Leonardo's web app references a ready UPLOADED asset ID for video guidance.
+	// We mirror that behavior here by waiting for the staged upload to resolve to
+	// a usable asset ID before submitting generation.
+	videoID, err := s.LeonardoClient.WaitForInitImage(session, initResult.UploadID, initImageLookupTimeout)
+	if err != nil {
+		return "", fmt.Errorf("wait for staged video asset failed: %w", err)
+	}
+	log.Printf("[Leonardo] Video upload ready: uploadID=%s videoID=%s", initResult.UploadID, videoID)
+	return videoID, nil
 }
 
 func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {
