@@ -164,17 +164,27 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 }
 
 func (s *Server) tokenAutoRefreshInterval() time.Duration {
-	hours := 15
+	minutes := 15
 	if s != nil && s.Config != nil {
-		hours = s.Config.GetInt("refresh_interval_hours", 15)
+		minutes = s.Config.GetInt("refresh_interval_minutes", 0)
+		if minutes <= 0 {
+			hours := s.Config.GetInt("refresh_interval_hours", 15)
+			if hours < 1 {
+				hours = 1
+			}
+			if hours > 24 {
+				hours = 24
+			}
+			minutes = hours * 60
+		}
 	}
-	if hours < 1 {
-		hours = 1
+	if minutes < 1 {
+		minutes = 1
 	}
-	if hours > 24 {
-		hours = 24
+	if minutes > 1440 {
+		minutes = 1440
 	}
-	return time.Duration(hours) * time.Hour
+	return time.Duration(minutes) * time.Minute
 }
 
 func (s *Server) shouldRunTokenAutoRefresh(tokenID string, now time.Time, interval time.Duration) bool {

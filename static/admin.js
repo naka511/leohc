@@ -1045,7 +1045,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confTokenSuccessAutoDisableThreshold = document.getElementById("confTokenSuccessAutoDisableThreshold");
   const overwriteSuccessCountsBtn = document.getElementById("overwriteSuccessCountsBtn");
   const overwriteSuccessCountsResult = document.getElementById("overwriteSuccessCountsResult");
-  const confRefreshIntervalHours = document.getElementById("confRefreshIntervalHours");
+  const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
   const confGeneratedPruneSizeMb = document.getElementById("confGeneratedPruneSizeMb");
@@ -1239,7 +1239,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confTokenSuccessAutoDisableThreshold) {
           confTokenSuccessAutoDisableThreshold.value = Number(data.token_success_auto_disable_threshold || 2);
         }
-        confRefreshIntervalHours.value = Number(data.refresh_interval_hours || 15);
+        const refreshIntervalMinutes = Number(
+          data.refresh_interval_minutes || (Number(data.refresh_interval_hours || 0) > 0 ? Number(data.refresh_interval_hours) * 60 : 15)
+        );
+        confRefreshIntervalMinutes.value = refreshIntervalMinutes;
         currentBatchConcurrency = Math.max(1, Math.min(100, Number(data.batch_concurrency || 5)));
         confBatchConcurrency.value = currentBatchConcurrency;
         confGeneratedMaxSizeMb.value = Number(data.generated_max_size_mb || 1024);
@@ -1291,7 +1294,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         token_rotation_strategy: String(confTokenRotationStrategy.value || "round_robin").trim() || "round_robin",
         token_success_auto_disable_enabled: Boolean(confTokenSuccessAutoDisableEnabled?.checked),
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
-        refresh_interval_hours: Number(confRefreshIntervalHours.value || 15),
+        refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 15),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
         generated_max_size_mb: Math.max(100, Math.min(102400, Number(confGeneratedMaxSizeMb.value || 1024))),
         generated_prune_size_mb: Math.max(10, Math.min(10240, Number(confGeneratedPruneSizeMb.value || 200))),
@@ -1308,8 +1311,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         throw new Error("管理员密码不能为空");
       }
 
-      if (!Number.isInteger(payload.refresh_interval_hours) || payload.refresh_interval_hours < 1 || payload.refresh_interval_hours > 24) {
-        throw new Error("自动刷新间隔必须是 1-24 的整数小时");
+      delete payload.refresh_interval_hours;
+
+      if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
+        throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");
       }
       if (!Number.isInteger(payload.batch_concurrency) || payload.batch_concurrency < 1 || payload.batch_concurrency > 100) {
         throw new Error("批量导入/积分并发数必须是 1-100 的整数");
