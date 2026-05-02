@@ -12,12 +12,7 @@
 
 ```json
 {
-  "items": [
-    {
-      "name": "Leonardo Standard Cookie",
-      "cookie": "__Secure-better-auth.session_token=...; __Secure-better-auth.session_data.0=...; CF_Access_Token=..."
-    }
-  ]
+  "cookie": "__Secure-better-auth.session_token=...; __Secure-better-auth.session_data.0=...; CF_Access_Token=..."
 }
 ```
 
@@ -45,3 +40,4 @@ browser-extension/leonardo-cookie-exporter
 
 - 默认勾选“包含全部 Leonardo Cookie”，兼容性更高
 - 如果你只想拿最核心的登录字段，也可以取消勾选，只导出认证相关 Cookie
+- 当前导出的是最简格式，只保留 `cookie` 字段，便于手动查看和导入

@@ -78,18 +78,9 @@ function toCookieString(cookies) {
     .join("; ");
 }
 
-function buildExportPayload(cookieString, cookieCount) {
+function buildExportPayload(cookieString) {
   return {
-    items: [
-      {
-        name: "Leonardo Standard Cookie",
-        cookie: cookieString,
-        source: "browser-extension",
-        platform: "leonardo",
-        exported_at: new Date().toISOString(),
-        cookie_count: cookieCount,
-      },
-    ],
+    cookie: cookieString,
   };
 }
 
@@ -116,7 +107,7 @@ async function exportJson() {
 
   try {
     const { cookieString, cookieCount } = await collectCookieString();
-    const payload = buildExportPayload(cookieString, cookieCount);
+    const payload = buildExportPayload(cookieString);
     const json = JSON.stringify(payload, null, prettyJson.checked ? 2 : 0);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
