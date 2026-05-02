@@ -162,7 +162,7 @@ func (s *Store) UpdateDuration(genID string, durationSec float64) {
 }
 
 // List returns paginated log entries with optional filtering.
-func (s *Store) List(page, pageSize int, failedOnly bool, accountFilter string) ([]Entry, int, int) {
+func (s *Store) List(page, pageSize int, failedOnly bool) ([]Entry, int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -173,9 +173,6 @@ func (s *Store) List(page, pageSize int, failedOnly bool, accountFilter string) 
 			continue
 		}
 		if failedOnly && normalizeTaskStatus(e.TaskStatus) != "FAILED" {
-			continue
-		}
-		if accountFilter != "" && e.AccountName != accountFilter && e.AccountEmail != accountFilter && e.TokenID != accountFilter {
 			continue
 		}
 		filtered = append(filtered, e)
@@ -273,60 +270,6 @@ func (s *Store) Stats(rangeStr string) map[string]interface{} {
 		"start_ts":         startTs,
 		"end_ts":           float64(now.Unix()),
 	}
-}
-
-// FailedAccounts returns a list of unique accounts that had failures.
-func (s *Store) FailedAccounts() []map[string]interface{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	type failedAccount struct {
-		AccountKey   string
-		AccountName  string
-		AccountEmail string
-		TokenID      string
-		FailCount    int
-	}
-
-	counts := make(map[string]*failedAccount)
-	for _, e := range s.entries {
-		if normalizeTaskStatus(e.TaskStatus) != "FAILED" {
-			continue
-		}
-		key := strings.TrimSpace(e.AccountEmail)
-		if key == "" {
-			key = strings.TrimSpace(e.AccountName)
-		}
-		if key == "" {
-			key = strings.TrimSpace(e.TokenID)
-		}
-		if key == "" {
-			continue
-		}
-		item := counts[key]
-		if item == nil {
-			item = &failedAccount{
-				AccountKey:   key,
-				AccountName:  strings.TrimSpace(e.AccountName),
-				AccountEmail: strings.TrimSpace(e.AccountEmail),
-				TokenID:      strings.TrimSpace(e.TokenID),
-			}
-			counts[key] = item
-		}
-		item.FailCount++
-	}
-
-	var result []map[string]interface{}
-	for _, item := range counts {
-		result = append(result, map[string]interface{}{
-			"account_key":         item.AccountKey,
-			"token_account_name":  item.AccountName,
-			"token_account_email": item.AccountEmail,
-			"token_id":            item.TokenID,
-			"failed_count":        item.FailCount,
-		})
-	}
-	return result
 }
 
 // Clear removes all entries. Returns the count cleared.

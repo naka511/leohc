@@ -687,9 +687,8 @@ func (s *Server) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	failedOnly := r.URL.Query().Get("failed_only") == "true" || r.URL.Query().Get("failed_only") == "1"
-	account := r.URL.Query().Get("account")
 
-	entries, curPage, totalPages := s.ReqLog.List(page, pageSize, failedOnly, account)
+	entries, curPage, totalPages := s.ReqLog.List(page, pageSize, failedOnly)
 
 	// Convert to interface slice
 	var logs []interface{}
@@ -728,30 +727,6 @@ func (s *Server) HandleLogsRunning(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{
 		"items": items,
 		"total": len(items),
-	})
-}
-
-// HandleFailedAccounts handles GET /api/v1/logs/failed-accounts.
-func (s *Server) HandleFailedAccounts(w http.ResponseWriter, r *http.Request) {
-	if err := s.requireAdmin(r); err != nil {
-		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
-		return
-	}
-
-	var accounts []interface{}
-	if s.ReqLog != nil {
-		for _, a := range s.ReqLog.FailedAccounts() {
-			accounts = append(accounts, a)
-		}
-	}
-	if accounts == nil {
-		accounts = []interface{}{}
-	}
-
-	writeJSON(w, 200, map[string]interface{}{
-		"items":    accounts,
-		"accounts": accounts,
-		"total":    len(accounts),
 	})
 }
 

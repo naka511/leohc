@@ -132,7 +132,6 @@ func main() {
 
 	// ─── Logs ───
 	mux.HandleFunc("/api/v1/logs/running", srv.HandleLogsRunning)
-	mux.HandleFunc("/api/v1/logs/failed-accounts", srv.HandleFailedAccounts)
 	mux.HandleFunc("/api/v1/logs/stats", srv.HandleLogsStats)
 	mux.HandleFunc("/api/v1/logs", srv.HandleLogs)
 
