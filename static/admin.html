@@ -276,6 +276,12 @@
               <p class="help">用于批量导入 Cookie 时的自动刷新与账号信息查询。默认并行 5 个。</p>
             </div>
 
+            <div class="form-group">
+              <label for="confJwtRefreshMarginMinutes">JWT 提前刷新阈值 (分钟)</label>
+              <input type="number" id="confJwtRefreshMarginMinutes" class="input-text" min="0" max="60" step="1" placeholder="默认 5" />
+              <p class="help">默认 5。剩余时间小于等于该值时，刷新 Token / 自动刷新会主动换新 JWT。填 0 表示手动刷新或自动刷新时总是强制换新；常规生成请求仍只会在 JWT 过期或缺失时换新。</p>
+            </div>
+
             <div class="config-inline-row">
               <div class="form-group inline-item">
                 <label for="confGeneratedMaxSizeMb">生成文件空间上限 (MB)</label>

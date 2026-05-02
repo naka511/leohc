@@ -279,6 +279,9 @@ func (s *Server) reloadRuntimeClients() {
 	}
 
 	s.LeonardoClient = leonardo.NewClient(basicProxy)
+	if s.Config != nil {
+		s.LeonardoClient.SetJWTRefreshMarginMinutes(s.Config.GetInt("jwt_refresh_margin_minutes", 5))
+	}
 	s.leoSessionMu.Lock()
 	s.leoSessions = make(map[string]*leonardo.TokenSession)
 	s.leoSessionMu.Unlock()

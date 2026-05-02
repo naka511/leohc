@@ -59,6 +59,7 @@ func main() {
 		proxy = cfg.GetString("proxy", "")
 	}
 	leoClient := leonardo.NewClient(proxy)
+	leoClient.SetJWTRefreshMarginMinutes(cfg.GetInt("jwt_refresh_margin_minutes", 5))
 	log.Printf("[leonardo] client initialized")
 
 	reqLogFile := filepath.Join(configDir, "request_logs.json")

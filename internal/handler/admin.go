@@ -428,11 +428,23 @@ func (s *Server) validateLeonardoToken(tokenID, rawToken string) (*leonardo.Toke
 	if session == nil {
 		return nil, nil, fmt.Errorf("token value is required")
 	}
+	if s.shouldForceJWTRefreshOnValidation() {
+		if err := s.LeonardoClient.RefreshSession(session); err != nil {
+			return session, nil, fmt.Errorf("token validation failed: %w", err)
+		}
+	}
 	credits, err := s.LeonardoClient.QueryCredits(session)
 	if err != nil {
 		return session, nil, fmt.Errorf("token validation failed: %w", err)
 	}
 	return session, credits, nil
+}
+
+func (s *Server) shouldForceJWTRefreshOnValidation() bool {
+	if s == nil || s.Config == nil {
+		return false
+	}
+	return s.Config.GetInt("jwt_refresh_margin_minutes", 5) <= 0
 }
 
 func (s *Server) getOrCreateLeonardoSession(tokenID, rawToken string) *leonardo.TokenSession {

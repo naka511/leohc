@@ -986,6 +986,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const overwriteSuccessCountsBtn = document.getElementById("overwriteSuccessCountsBtn");
   const overwriteSuccessCountsResult = document.getElementById("overwriteSuccessCountsResult");
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
+  const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
   const confGeneratedPruneSizeMb = document.getElementById("confGeneratedPruneSizeMb");
@@ -1118,6 +1119,9 @@ document.addEventListener("DOMContentLoaded", async () => {
           data.refresh_interval_minutes || (Number(data.refresh_interval_hours || 0) > 0 ? Number(data.refresh_interval_hours) * 60 : 15)
         );
         confRefreshIntervalMinutes.value = refreshIntervalMinutes;
+        if (confJwtRefreshMarginMinutes) {
+          confJwtRefreshMarginMinutes.value = Math.max(0, Math.min(60, Number(data.jwt_refresh_margin_minutes ?? 5)));
+        }
         currentBatchConcurrency = Math.max(1, Math.min(100, Number(data.batch_concurrency || 5)));
         confBatchConcurrency.value = currentBatchConcurrency;
         confGeneratedMaxSizeMb.value = Number(data.generated_max_size_mb || 1024);
@@ -1170,6 +1174,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         token_success_auto_disable_enabled: Boolean(confTokenSuccessAutoDisableEnabled?.checked),
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
         refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 15),
+        jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
         generated_max_size_mb: Math.max(100, Math.min(102400, Number(confGeneratedMaxSizeMb.value || 1024))),
         generated_prune_size_mb: Math.max(10, Math.min(10240, Number(confGeneratedPruneSizeMb.value || 200))),
@@ -1190,6 +1195,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
         throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");
+      }
+      if (!Number.isInteger(payload.jwt_refresh_margin_minutes) || payload.jwt_refresh_margin_minutes < 0 || payload.jwt_refresh_margin_minutes > 60) {
+        throw new Error("JWT 提前刷新阈值必须是 0-60 的整数分钟");
       }
       if (!Number.isInteger(payload.batch_concurrency) || payload.batch_concurrency < 1 || payload.batch_concurrency > 100) {
         throw new Error("批量导入/积分并发数必须是 1-100 的整数");

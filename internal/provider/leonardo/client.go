@@ -36,6 +36,8 @@ const (
 	s3UploadRetryDelay   = 2 * time.Second
 )
 
+const defaultJWTRefreshMargin = 5 * time.Minute
+
 func isRetryableGraphQLError(err error) bool {
 	if err == nil {
 		return false
@@ -75,8 +77,9 @@ type Credits struct {
 
 // Client manages Leonardo API interactions.
 type Client struct {
-	httpClient *http.Client
-	proxy      string
+	httpClient       *http.Client
+	proxy            string
+	jwtRefreshMargin time.Duration
 }
 
 // NewClient creates a new Leonardo client.
@@ -92,8 +95,32 @@ func NewClient(proxy string) *Client {
 			Transport: transport,
 			Timeout:   defaultClientTimeout,
 		},
-		proxy: proxy,
+		proxy:            proxy,
+		jwtRefreshMargin: defaultJWTRefreshMargin,
 	}
+}
+
+func (c *Client) SetJWTRefreshMarginMinutes(minutes int) {
+	if c == nil {
+		return
+	}
+	if minutes < 0 {
+		minutes = 0
+	}
+	if minutes > 1440 {
+		minutes = 1440
+	}
+	c.jwtRefreshMargin = time.Duration(minutes) * time.Minute
+}
+
+func (c *Client) jwtRefreshMarginDuration() time.Duration {
+	if c == nil {
+		return defaultJWTRefreshMargin
+	}
+	if c.jwtRefreshMargin < 0 {
+		return 0
+	}
+	return c.jwtRefreshMargin
 }
 
 // ──────────────────────────────────────────────────────────
@@ -346,7 +373,7 @@ func getKeys(m map[string]interface{}) []string {
 // EnsureValidJWT checks if the JWT is still valid, refreshes if needed.
 func (c *Client) EnsureValidJWT(session *TokenSession) error {
 	session.mu.RLock()
-	needsRefresh := session.JWT == "" || time.Now().Add(time.Duration(JWTMarginSec)*time.Second).After(session.JWTExpiry)
+	needsRefresh := session.JWT == "" || time.Now().Add(c.jwtRefreshMarginDuration()).After(session.JWTExpiry)
 	session.mu.RUnlock()
 
 	if needsRefresh {
@@ -360,7 +387,7 @@ func (c *Client) EnsureValidJWT(session *TokenSession) error {
 func (s *TokenSession) IsJWTValid() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.JWT != "" && time.Now().Add(time.Duration(JWTMarginSec)*time.Second).Before(s.JWTExpiry)
+	return s.JWT != "" && time.Now().Before(s.JWTExpiry)
 }
 
 // GetJWTRemainingSeconds returns seconds until JWT expiry.

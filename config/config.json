@@ -12,6 +12,7 @@
   "imgbed_enabled": false,
   "proxy": "",
   "public_base_url": "http://127.0.0.1:8787/",
+  "jwt_refresh_margin_minutes": 5,
   "refresh_interval_minutes": 15,
   "resource_proxy": "",
   "resource_use_proxy": false,
