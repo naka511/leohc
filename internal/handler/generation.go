@@ -282,8 +282,12 @@ func (s *Server) reloadRuntimeClients() {
 	if s.Config != nil {
 		s.LeonardoClient.SetJWTRefreshMarginMinutes(s.Config.GetInt("jwt_refresh_margin_minutes", 5))
 	}
+	// 保留现有 Leonardo 会话缓存，避免仅仅因为保存系统配置就丢失 JWT，
+	// 导致下一次手动刷新总是重新续成 1 小时。
 	s.leoSessionMu.Lock()
-	s.leoSessions = make(map[string]*leonardo.TokenSession)
+	if s.leoSessions == nil {
+		s.leoSessions = make(map[string]*leonardo.TokenSession)
+	}
 	s.leoSessionMu.Unlock()
 }
 
