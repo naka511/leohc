@@ -1533,7 +1533,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get session from token pool
-	session, usedTokenID := s.getLeonardoSession(body.TokenID)
+	session, usedTokenID := s.getLeonardoSessionForModel(body.TokenID, body.Model)
 	if session == nil {
 		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found or no Leonardo tokens available"})
 		return
@@ -1687,7 +1687,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Background polling goroutine to auto-update log status
-	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID, startTime)
+	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID, body.Model, startTime)
 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":            true,
@@ -2392,7 +2392,7 @@ func videoExtFromURL(rawPath string) string {
 }
 
 // pollGenerationStatus runs in a goroutine to auto-update log status.
-func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID string, tokenID string, startedAt time.Time) {
+func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID string, tokenID string, modelID string, startedAt time.Time) {
 	const (
 		pollInterval = 10 * time.Second
 		maxDuration  = 10 * time.Minute
@@ -2452,6 +2452,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 				}
 			}
 			// Refresh token credits
+			s.reportSeedanceGenerationSuccess(tokenID, modelID)
 			s.refreshTokenCredits(tokenID, session)
 			return
 
@@ -2522,12 +2523,33 @@ func (s *Server) applyTokenCreditCost(tokenID string, creditCost int) {
 	log.Printf("[poll] applied credit cost for token %s: -%d, %.0f remaining", tokenID, creditCost, next)
 }
 
+func (s *Server) reportSeedanceGenerationSuccess(tokenID string, modelID string) {
+	if tokenID == "" || s.TokenMgr == nil {
+		return
+	}
+	autoDisableEnabled := false
+	if s.Config != nil {
+		autoDisableEnabled = s.Config.GetBool("token_success_auto_disable_enabled", false)
+	}
+	info := s.TokenMgr.ReportModelSuccessWithAutoDisable(tokenID, modelID, autoDisableEnabled)
+	if info == nil || !autoDisableEnabled {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(toString(info["status"])), "exhausted") {
+		log.Printf("[token] auto-disabled exhausted Seedance token %s after model usage fast=%v standard=%v", tokenID, info["seedance_fast_success_count"], info["seedance_standard_success_count"])
+	}
+}
+
 func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string]bool) (*leonardo.TokenSession, string) {
+	return s.getLeonardoSessionForModelExcluding(tokenID, excluded, "")
+}
+
+func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded map[string]bool, modelID string) (*leonardo.TokenSession, string) {
 	if tokenID != "" {
 		if excluded != nil && excluded[tokenID] {
 			return nil, ""
 		}
-		return s.getLeonardoSession(tokenID)
+		return s.getLeonardoSessionForModel(tokenID, modelID)
 	}
 
 	strategy := "round_robin"
@@ -2555,6 +2577,9 @@ func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string
 			continue
 		}
 		tried[foundID] = true
+		if !s.seedanceTokenCanRunModel(info, modelID) {
+			continue
+		}
 
 		rawToken := strings.TrimSpace(toString(info["value"]))
 		if rawToken == "" {
@@ -2576,10 +2601,17 @@ func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string
 // getLeonardoSession finds a Leonardo session from the token pool.
 // Returns the session and the token ID used.
 func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, string) {
+	return s.getLeonardoSessionForModel(tokenID, "")
+}
+
+func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*leonardo.TokenSession, string) {
 	// If specific tokenID provided, use that
 	if tokenID != "" {
 		info := s.TokenMgr.GetByID(tokenID)
 		if info == nil {
+			return nil, ""
+		}
+		if !s.seedanceTokenCanRunModel(info, modelID) {
 			return nil, ""
 		}
 		rawToken, _ := info["value"].(string)
@@ -2622,6 +2654,9 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 			continue
 		}
 		tried[foundID] = true
+		if !s.seedanceTokenCanRunModel(info, modelID) {
+			continue
+		}
 
 		rawToken := strings.TrimSpace(toString(info["value"]))
 		if rawToken == "" {
@@ -2638,6 +2673,25 @@ func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, str
 		return session, foundID
 	}
 	return nil, ""
+}
+
+func (s *Server) seedanceTokenCanRunModel(info map[string]interface{}, modelID string) bool {
+	if info == nil || s == nil || s.Config == nil || !s.Config.GetBool("token_success_auto_disable_enabled", false) {
+		return true
+	}
+	fastCount := int(toFloat64(info["seedance_fast_success_count"]))
+	standardCount := int(toFloat64(info["seedance_standard_success_count"]))
+	if fastCount >= 2 || (standardCount >= 1 && fastCount >= 1) {
+		return false
+	}
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0":
+		return standardCount < 1
+	case "seedance-2.0-fast":
+		return fastCount < 2
+	default:
+		return true
+	}
 }
 
 func statusForLeonardoRefreshError(err error) int {

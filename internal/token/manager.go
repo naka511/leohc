@@ -24,6 +24,8 @@ type Token struct {
 	Fails              int     `json:"fails"`
 	SuccessCount       int     `json:"success_count"`
 	TotalSuccessCount  int     `json:"total_success_count"`
+	SeedanceFastCount  int     `json:"seedance_fast_success_count,omitempty"`
+	SeedanceStdCount   int     `json:"seedance_standard_success_count,omitempty"`
 	AddedAt            float64 `json:"added_at"`
 	LastUsedAt         float64 `json:"last_used_at,omitempty"`
 	ErrorUntil         float64 `json:"error_until,omitempty"`
@@ -302,7 +304,7 @@ func (m *Manager) ReportSuccess(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -319,7 +321,7 @@ func (m *Manager) ReportSuccessWithAutoDisable(tokenValue string, autoDisableEna
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -330,6 +332,36 @@ func (m *Manager) ReportSuccessWithAutoDisable(tokenValue string, autoDisableEna
 
 	if autoDisableEnabled && threshold > 0 && t.SuccessCount >= threshold {
 		t.Status = "exhausted"
+	}
+	m.save()
+	return tokenToMap(t)
+}
+
+// ReportModelSuccessWithAutoDisable marks a successful Seedance generation and
+// disables the token when the fixed usage combination has been completed.
+func (m *Manager) ReportModelSuccessWithAutoDisable(tokenIDOrValue, modelID string, autoDisableEnabled bool) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t := m.findByIDOrValue(tokenIDOrValue)
+	if t == nil {
+		return nil
+	}
+	t.Fails = 0
+	t.SuccessCount++
+	t.TotalSuccessCount++
+	t.ErrorUntil = 0
+
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0-fast":
+		t.SeedanceFastCount++
+	case "seedance-2.0":
+		t.SeedanceStdCount++
+	}
+
+	if autoDisableEnabled && t.seedanceSlotsExhausted() {
+		t.Status = "exhausted"
+		t.AutoRefresh = false
 	}
 	m.save()
 	return tokenToMap(t)
@@ -657,6 +689,23 @@ func (m *Manager) findByValue(value string) *Token {
 	return nil
 }
 
+func (m *Manager) findByIDOrValue(value string) *Token {
+	value = strings.TrimSpace(value)
+	for _, t := range m.tokens {
+		if strings.TrimSpace(t.ID) == value || strings.TrimSpace(t.Value) == value {
+			return t
+		}
+	}
+	return nil
+}
+
+func (t *Token) seedanceSlotsExhausted() bool {
+	if t == nil {
+		return false
+	}
+	return t.SeedanceFastCount >= 2 || (t.SeedanceStdCount >= 1 && t.SeedanceFastCount >= 1)
+}
+
 // ---- serialization helpers ----
 
 func tokenToMap(t *Token) map[string]interface{} {
@@ -668,23 +717,25 @@ func tokenToMap(t *Token) map[string]interface{} {
 
 func tokenToSummary(t *Token) map[string]interface{} {
 	m := map[string]interface{}{
-		"id":                   t.ID,
-		"platform":             t.Platform,
-		"token_type":           t.TokenType,
-		"status":               t.Status,
-		"fails":                t.Fails,
-		"success_count":        t.SuccessCount,
-		"total_success_count":  t.TotalSuccessCount,
-		"added_at":             t.AddedAt,
-		"last_used_at":         t.LastUsedAt,
-		"error_until":          t.ErrorUntil,
-		"account_name":         t.AccountName,
-		"account_email":        t.AccountEmail,
-		"source":               t.Source,
-		"auto_refresh":         t.AutoRefresh,
-		"refresh_profile_id":   t.RefreshProfileID,
-		"refresh_profile_name": t.RefreshProfileName,
-		"value_preview":        maskTokenValue(t.Value),
+		"id":                              t.ID,
+		"platform":                        t.Platform,
+		"token_type":                      t.TokenType,
+		"status":                          t.Status,
+		"fails":                           t.Fails,
+		"success_count":                   t.SuccessCount,
+		"total_success_count":             t.TotalSuccessCount,
+		"seedance_fast_success_count":     t.SeedanceFastCount,
+		"seedance_standard_success_count": t.SeedanceStdCount,
+		"added_at":                        t.AddedAt,
+		"last_used_at":                    t.LastUsedAt,
+		"error_until":                     t.ErrorUntil,
+		"account_name":                    t.AccountName,
+		"account_email":                   t.AccountEmail,
+		"source":                          t.Source,
+		"auto_refresh":                    t.AutoRefresh,
+		"refresh_profile_id":              t.RefreshProfileID,
+		"refresh_profile_name":            t.RefreshProfileName,
+		"value_preview":                   maskTokenValue(t.Value),
 	}
 	// Credits info for frontend
 	if t.Credits > 0 || t.MaxCredits > 0 {

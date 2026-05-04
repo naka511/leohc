@@ -185,7 +185,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastAttempt int
 
 	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
-		session, usedTokenID := s.getLeonardoSessionExcluding("", triedTokenIDs)
+		session, usedTokenID := s.getLeonardoSessionForModelExcluding("", triedTokenIDs, modelID)
 		if session == nil {
 			if lastFailure != nil {
 				break
@@ -585,9 +585,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, finalURL, "video", "")
 						s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 					}
-					if s.TokenMgr != nil {
-						s.TokenMgr.ReportSuccess(usedTokenID)
-					}
+					s.reportSeedanceGenerationSuccess(usedTokenID, modelID)
 					s.refreshTokenCredits(usedTokenID, session)
 					return &videoGenerationSuccess{FinalURL: finalURL}, nil
 				}
