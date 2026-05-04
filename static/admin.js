@@ -299,19 +299,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function formatCredits(token) {
     const available = Number(token?.credits_available);
-    const total = Number(token?.credits_total);
-    const availableUntil = String(token?.credits_available_until || "").trim();
     const err = String(token?.credits_error || "").trim();
 
     if (err) {
-      return `<span style="color:#ffb4bc;">刷新失败</span><br><span style="color:#7f96ad;">${escapeHtml(err)}</span>`;
+      return `<span style="color:#ffb4bc;" title="${escapeHtml(err)}">刷新失败</span>`;
     }
-    if (!Number.isFinite(available) || !Number.isFinite(total)) {
+    if (!Number.isFinite(available)) {
       return `<span style="color:#7f96ad;">未获取</span>`;
     }
 
-    const resetText = availableUntil ? new Date(availableUntil).toLocaleString() : "-";
-    return `<span style="color:#a8bfd8;">${available} / ${total}</span><br><span style="color:#7f96ad;">重置 ${resetText}</span>`;
+    return `<span style="color:#a8bfd8;">${available}</span>`;
+  }
+
+  function formatTokenSuccessCounts(token) {
+    const standard = Number(token?.seedance_standard_success_count || 0);
+    const fast = Number(token?.seedance_fast_success_count || 0);
+    const total = Number(token?.success_count || 0);
+    const parts = [];
+    for (let i = 0; i < standard; i += 1) parts.push("S");
+    for (let i = 0; i < fast; i += 1) parts.push("F");
+    const text = parts.length ? parts.join("+") : "0";
+    const title = `seedance-2.0: ${standard} 次；seedance-2.0-fast: ${fast} 次；总成功: ${total} 次`;
+    const color = total > 0 ? "#4de2c4" : "#a8bfd8";
+    return `<span style="color:${color};" title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
   }
 
   function renderTable(tokens, summary = null, pagination = null) {
@@ -393,7 +403,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
         <td>${autoRefreshCell}</td>
         <td style="font-size:12px; line-height:1.35;">${formatCredits(t)}</td>
-        <td style="color: ${Number(t.success_count || 0) > 0 ? '#4de2c4' : '#a8bfd8'};">${Number(t.success_count || 0)}</td>
+        <td>${formatTokenSuccessCounts(t)}</td>
         <td style="font-size:12px; line-height:1.35;">${formatExpiry(t)}</td>
         <td>${actionsGrid}</td>
       `;
@@ -1016,8 +1026,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confTokenRotationStrategy = document.getElementById("confTokenRotationStrategy");
   const confTokenSuccessAutoDisableEnabled = document.getElementById("confTokenSuccessAutoDisableEnabled");
   const confTokenSuccessAutoDisableThreshold = document.getElementById("confTokenSuccessAutoDisableThreshold");
-  const overwriteSuccessCountsBtn = document.getElementById("overwriteSuccessCountsBtn");
-  const overwriteSuccessCountsResult = document.getElementById("overwriteSuccessCountsResult");
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
@@ -1290,57 +1298,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     saveConfigBtn.disabled = false;
   });
-
-  if (overwriteSuccessCountsBtn) {
-    overwriteSuccessCountsBtn.addEventListener("click", async () => {
-      const ok = confirm("将根据历史成功生成日志，覆盖所有 token 当前成功次数。确定继续吗？");
-      if (!ok) return;
-
-      overwriteSuccessCountsBtn.disabled = true;
-      if (overwriteSuccessCountsResult) {
-        overwriteSuccessCountsResult.textContent = "正在覆盖回填成功次数...";
-      }
-      try {
-        const res = await fetch("/api/v1/tokens/success-counts/overwrite-from-logs", {
-          method: "POST",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data?.detail || "覆盖回填成功次数失败");
-        }
-        const lines = [
-          "覆盖回填完成",
-          `扫描日志：${Number(data.scanned_logs || 0)}`,
-          `生成日志：${Number(data.generation_logs || 0)}`,
-          `成功日志：${Number(data.success_logs || 0)}`,
-          `未识别成功日志：${Number(data.unidentified_success_logs || 0)}`,
-          `匹配 Token：${Number(data.matched_tokens || 0)}`,
-          `按 ID 匹配：${Number(data.matched_by_token_id || 0)}`,
-          `按邮箱匹配：${Number(data.matched_by_email || 0)}`,
-          `按名称匹配：${Number(data.matched_by_name || 0)}`,
-          `已修改 Token：${Number(data.changed_tokens || 0)}`,
-          `重置为 0：${Number(data.reset_to_zero_tokens || 0)}`,
-          `有成功次数 Token：${Number(data.nonzero_success_tokens || 0)}`,
-          `总成功次数：${Number(data.total_success_count || 0)}`,
-          `达到阈值标记耗尽：${Number(data.exhausted_by_threshold || 0)}`,
-          `关闭自动刷新：${Number(data.disabled_auto_refresh_profiles || 0)}`,
-        ];
-        if (overwriteSuccessCountsResult) {
-          overwriteSuccessCountsResult.textContent = lines.join("\n");
-        }
-        showToast("成功次数覆盖回填完成", false, { duration: 7000 });
-        await loadTokens();
-      } catch (err) {
-        const message = err.message || "覆盖回填成功次数失败";
-        if (overwriteSuccessCountsResult) {
-          overwriteSuccessCountsResult.textContent = message;
-        }
-        showToast(message, true, { duration: 8000 });
-      } finally {
-        overwriteSuccessCountsBtn.disabled = false;
-      }
-    });
-  }
 
   function formatProxyConnectivityItem(title, item) {
     const data = item && typeof item === "object" ? item : {};

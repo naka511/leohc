@@ -95,7 +95,6 @@ func main() {
 	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleTokenAutoRefreshBatch)
 	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleTokenRefreshBatch)
 	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleCheckInvalidTokensBatch)
-	mux.HandleFunc("/api/v1/tokens/success-counts/overwrite-from-logs", srv.HandleStubPost)
 
 	// Token CRUD (must be after more specific /tokens/xxx routes)
 	mux.HandleFunc("/api/v1/tokens/", func(w http.ResponseWriter, r *http.Request) {
