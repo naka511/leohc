@@ -547,13 +547,274 @@ func (s *Server) HandleDeleteBatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
 		return
 	}
-	deleted := 0
+	deletedIDs := []string{}
+	missing := 0
 	for _, id := range body.IDs {
 		if s.TokenMgr.Remove(id) == nil {
-			deleted++
+			deletedIDs = append(deletedIDs, id)
+		} else {
+			missing++
 		}
 	}
-	writeJSON(w, 200, map[string]interface{}{"ok": true, "deleted": deleted})
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":            true,
+		"deleted":       len(deletedIDs),
+		"deleted_count": len(deletedIDs),
+		"deleted_ids":   deletedIDs,
+		"missing_count": missing,
+	})
+}
+
+// HandleTokenStatusBatch handles POST /api/v1/tokens/status-batch.
+func (s *Server) HandleTokenStatusBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		IDs    []string `json:"ids"`
+		Status string   `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(body.Status))
+	if status != "active" && status != "disabled" {
+		writeJSON(w, 400, map[string]string{"detail": "status must be active or disabled"})
+		return
+	}
+
+	updated, missing, failed := 0, 0, 0
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			failed++
+			continue
+		}
+		if s.TokenMgr.GetByID(id) == nil {
+			missing++
+			continue
+		}
+		if err := s.TokenMgr.SetStatus(id, status); err != nil {
+			failed++
+			continue
+		}
+		updated++
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":            true,
+		"status":        status,
+		"updated_count": updated,
+		"missing_count": missing,
+		"failed_count":  failed,
+	})
+}
+
+// HandleTokenAutoRefreshBatch handles POST /api/v1/tokens/auto-refresh-batch.
+func (s *Server) HandleTokenAutoRefreshBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		IDs     []string `json:"ids"`
+		Enabled bool     `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	updated, missing, failed, skipped := 0, 0, 0, 0
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			failed++
+			continue
+		}
+		info := s.TokenMgr.GetByID(id)
+		if info == nil {
+			missing++
+			continue
+		}
+		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+		if platform != "" && platform != "leonardo" {
+			skipped++
+			continue
+		}
+		if err := s.TokenMgr.SetAutoRefresh(id, body.Enabled); err != nil {
+			failed++
+			continue
+		}
+		updated++
+		if body.Enabled {
+			s.triggerTokenAutoRefresh(id)
+		}
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":            true,
+		"enabled":       body.Enabled,
+		"updated_count": updated,
+		"missing_count": missing,
+		"failed_count":  failed,
+		"skipped_count": skipped,
+	})
+}
+
+// HandleTokenRefreshBatch handles POST /api/v1/tokens/refresh-batch.
+func (s *Server) HandleTokenRefreshBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	refreshed, skipped, missing, failed := 0, 0, 0, 0
+	items := make([]map[string]interface{}, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		item := map[string]interface{}{"id": id}
+		info := s.TokenMgr.GetByID(id)
+		if info == nil {
+			missing++
+			item["status"] = "missing"
+			items = append(items, item)
+			continue
+		}
+		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+		tokenValue := strings.TrimSpace(toString(info["value"]))
+		if platform != "leonardo" || tokenValue == "" || s.LeonardoClient == nil {
+			skipped++
+			item["status"] = "skipped"
+			items = append(items, item)
+			continue
+		}
+		session, credits, err := s.validateLeonardoToken(id, tokenValue)
+		if err != nil {
+			failed++
+			item["status"] = "failed"
+			item["error"] = err.Error()
+			items = append(items, item)
+			continue
+		}
+		s.TokenMgr.SetStatus(id, "active")
+		if credits != nil {
+			s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+			item["credits"] = credits.TotalTokens
+		}
+		s.TokenMgr.UpdateExpiry(id, float64(session.JWTExpiry.Unix()))
+		s.TokenMgr.UpdateAccountInfo(id, session.HasuraUserID, session.Email)
+		refreshed++
+		item["status"] = "success"
+		item["email"] = session.Email
+		item["jwt_remaining"] = session.GetJWTRemainingSeconds()
+		items = append(items, item)
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":              true,
+		"refreshed_count": refreshed,
+		"success_count":   refreshed,
+		"skipped_count":   skipped,
+		"missing_count":   missing,
+		"failed_count":    failed,
+		"items":           items,
+	})
+}
+
+// HandleCheckInvalidTokensBatch handles POST /api/v1/tokens/check-invalid-batch.
+func (s *Server) HandleCheckInvalidTokensBatch(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	valid, invalid, changed, abnormal, abnormalChanged, skipped, failed, disabledAutoRefresh := 0, 0, 0, 0, 0, 0, 0, 0
+	items := make([]map[string]interface{}, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		item := map[string]interface{}{"id": id}
+		info := s.TokenMgr.GetByID(id)
+		if info == nil {
+			skipped++
+			item["status"] = "missing"
+			items = append(items, item)
+			continue
+		}
+		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+		tokenValue := strings.TrimSpace(toString(info["value"]))
+		if platform != "leonardo" || tokenValue == "" || s.LeonardoClient == nil {
+			skipped++
+			item["status"] = "skipped"
+			items = append(items, item)
+			continue
+		}
+		session, credits, err := s.validateLeonardoToken(id, tokenValue)
+		if err != nil {
+			errMsg := err.Error()
+			item["error"] = errMsg
+			switch {
+			case isInvalidLeonardoTokenError(err):
+				invalid++
+				if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "invalid" {
+					changed++
+				}
+				s.TokenMgr.SetStatus(id, "invalid")
+				item["status"] = "invalid"
+			case isAbnormalLeonardoTokenError(err):
+				abnormal++
+				if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "abnormal" {
+					abnormalChanged++
+				}
+				s.TokenMgr.SetStatus(id, "abnormal")
+				if s.TokenMgr.SetAutoRefresh(id, false) == nil {
+					disabledAutoRefresh++
+				}
+				item["status"] = "abnormal"
+			default:
+				failed++
+				item["status"] = "failed"
+			}
+			items = append(items, item)
+			continue
+		}
+		s.TokenMgr.SetStatus(id, "active")
+		if credits != nil {
+			s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+			item["credits"] = credits.TotalTokens
+		}
+		s.TokenMgr.UpdateExpiry(id, float64(session.JWTExpiry.Unix()))
+		s.TokenMgr.UpdateAccountInfo(id, session.HasuraUserID, session.Email)
+		valid++
+		item["status"] = "valid"
+		item["email"] = session.Email
+		items = append(items, item)
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":                          true,
+		"valid_count":                 valid,
+		"invalid_count":               invalid,
+		"changed_count":               changed,
+		"abnormal_count":              abnormal,
+		"abnormal_changed_count":      abnormalChanged,
+		"skipped_count":               skipped,
+		"failed_count":                failed,
+		"disabled_auto_refresh_count": disabledAutoRefresh,
+		"items":                       items,
+	})
 }
 
 // HandleTokenExport handles POST /api/v1/tokens/export.
@@ -2353,6 +2614,32 @@ func statusForLeonardoRefreshError(err error) int {
 		return http.StatusTooManyRequests
 	}
 	return http.StatusBadRequest
+}
+
+func isInvalidLeonardoTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid") ||
+		strings.Contains(msg, "expired") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "401") ||
+		strings.Contains(msg, "no jwt found")
+}
+
+func isAbnormalLeonardoTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "403") ||
+		strings.Contains(msg, "forbidden") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection") ||
+		strings.Contains(msg, "proxy") ||
+		strings.Contains(msg, "tls")
 }
 
 func runHTTPProxyConnectivityTest(enabled bool, proxyStr, targetURL string) map[string]interface{} {

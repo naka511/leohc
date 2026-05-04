@@ -64,6 +64,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const exportTokensBtn = document.getElementById("exportTokensBtn");
   const exportCookiesBtn = document.getElementById("exportCookiesBtn");
   const deleteTokensBatchBtn = document.getElementById("deleteTokensBatchBtn");
+  const enableTokensBatchBtn = document.getElementById("enableTokensBatchBtn");
+  const disableTokensBatchBtn = document.getElementById("disableTokensBatchBtn");
   const enableAutoRefreshBatchBtn = document.getElementById("enableAutoRefreshBatchBtn");
   const disableAutoRefreshBatchBtn = document.getElementById("disableAutoRefreshBatchBtn");
   const refreshTokensBatchBtn = document.getElementById("refreshTokensBatchBtn");
@@ -79,7 +81,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const taskReportSummary = document.getElementById("taskReportSummary");
   const taskReportCurrent = document.getElementById("taskReportCurrent");
   const taskReportItems = document.getElementById("taskReportItems");
-  const refreshBtn = document.getElementById("refreshBtn");
   const tokenSelectAll = document.getElementById("tokenSelectAll");
   const tbody = document.querySelector("#tokenTable tbody");
   const tokenTotalCount = document.getElementById("tokenTotalCount");
@@ -213,6 +214,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const selectedCount = tokenSelectedIds.size;
     if (tokenSelectedCount) tokenSelectedCount.textContent = String(selectedCount);
     if (clearTokenSelectionBtn) clearTokenSelectionBtn.disabled = selectedCount <= 0;
+    if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = selectedCount <= 0;
+    if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = selectedCount <= 0;
     if (enableAutoRefreshBatchBtn) enableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (disableAutoRefreshBatchBtn) disableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (refreshTokensBatchBtn) refreshTokensBatchBtn.disabled = selectedCount <= 0;
@@ -469,16 +472,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     addBtn.disabled = false;
   });
 
-  refreshBtn.addEventListener("click", async () => {
-    showToast("Token 列表刷新中...", false, { duration: 0 });
-    try {
-      await loadTokens();
-      showToast("Token 列表已刷新", false);
-    } catch (err) {
-      showToast("Token 列表刷新失败", true);
-    }
-  });
-
   [tokenStatusFilter, tokenCreditsFilter].forEach((filterEl) => {
     if (!filterEl) return;
     filterEl.addEventListener("change", () => {
@@ -682,6 +675,57 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   };
 
+  async function setSelectedTokenStatus(status) {
+    const selectedIds = Array.from(tokenSelectedIds);
+    if (!selectedIds.length) {
+      alert("请先选择要操作的 Token");
+      return;
+    }
+    const isEnable = status === "active";
+    const actionText = isEnable ? "启用" : "禁用";
+    if (!confirm(`确定批量${actionText}选中的 ${selectedIds.length} 个 Token 吗？`)) return;
+
+    const targetBtn = isEnable ? enableTokensBatchBtn : disableTokensBatchBtn;
+    if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = true;
+    if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = true;
+    showToast(`批量${actionText} Token 中...`, false, { duration: 0 });
+    try {
+      const res = await fetch("/api/v1/tokens/status-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds, status }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.detail || `批量${actionText} Token 失败`);
+      }
+      const updated = Number(data.updated_count || 0);
+      const missing = Number(data.missing_count || 0);
+      const failed = Number(data.failed_count || 0);
+      showToast(
+        `批量${actionText}完成：成功 ${updated}，未找到 ${missing}，失败 ${failed}`,
+        failed > 0,
+        { duration: 6000 }
+      );
+      await loadTokens();
+    } catch (err) {
+      showToast(err.message || `批量${actionText} Token 失败`, true);
+    } finally {
+      if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = false;
+      if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = false;
+      if (targetBtn) targetBtn.disabled = false;
+      updateTokenSelectionSummary();
+    }
+  }
+
+  if (enableTokensBatchBtn) {
+    enableTokensBatchBtn.addEventListener("click", () => setSelectedTokenStatus("active"));
+  }
+
+  if (disableTokensBatchBtn) {
+    disableTokensBatchBtn.addEventListener("click", () => setSelectedTokenStatus("disabled"));
+  }
+
   async function setSelectedAutoRefresh(enabled) {
     const selectedIds = Array.from(tokenSelectedIds);
     if (!selectedIds.length) {
@@ -769,22 +813,11 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
         const data = await res.json();
-        const jobId = String(data?.background_refresh?.job_id || "").trim();
-        if (!jobId) {
-          throw new Error("刷新任务创建失败");
-        }
-        await trackBackgroundJob({
-          title: "批量刷新 Token 进度",
-          initialPayload: data,
-          pollUrl: `/api/v1/tokens/refresh-jobs/${encodeURIComponent(jobId)}`,
-          onComplete: async (payload) => {
-            await loadTokens();
-            const ok = Number(payload?.refreshed_count || payload?.success_count || 0);
-            const skipped = Number(payload?.skipped_count || 0);
-            const fail = Number(payload?.failed_count || 0);
-            showToast(`批量刷新 Token 完成：成功 ${ok}，跳过 ${skipped}，失败 ${fail}`, fail > 0, { duration: 7000 });
-          },
-        });
+        await loadTokens();
+        const ok = Number(data.refreshed_count || data.success_count || 0);
+        const skipped = Number(data.skipped_count || 0);
+        const fail = Number(data.failed_count || 0);
+        showToast(`批量刷新 Token 完成：成功 ${ok}，跳过 ${skipped}，失败 ${fail}`, fail > 0, { duration: 7000 });
       } catch (err) {
         showToast(err.message || "批量刷新 Token 失败", true);
       } finally {

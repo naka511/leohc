@@ -90,11 +90,11 @@ func main() {
 	// ─── Token management (matches frontend /api/v1/tokens*) ───
 	mux.HandleFunc("/api/v1/tokens/batch", srv.HandleTokenBatchAdd)
 	mux.HandleFunc("/api/v1/tokens/delete-batch", srv.HandleDeleteBatch)
+	mux.HandleFunc("/api/v1/tokens/status-batch", srv.HandleTokenStatusBatch)
 	mux.HandleFunc("/api/v1/tokens/export", srv.HandleTokenExport)
-	// Stubs for not-yet-implemented batch operations
-	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleTokenAutoRefreshBatch)
+	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleTokenRefreshBatch)
+	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleCheckInvalidTokensBatch)
 	mux.HandleFunc("/api/v1/tokens/success-counts/overwrite-from-logs", srv.HandleStubPost)
 
 	// Token CRUD (must be after more specific /tokens/xxx routes)
