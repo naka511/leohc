@@ -56,6 +56,26 @@ type Server struct {
 	autoRefreshSweepRunning bool
 }
 
+type generationRetryPolicy struct {
+	Enabled       bool
+	MaxAttempts   int
+	BackoffBase   time.Duration
+	StatusCodes   map[int]struct{}
+	ErrorMatchers []string
+}
+
+type videoGenerationAttemptFailure struct {
+	StatusCode      int
+	Message         string
+	ErrorType       string
+	RetryCodeSource string
+	MarkInvalid     bool
+}
+
+type videoGenerationSuccess struct {
+	FinalURL string
+}
+
 // requireAPIKey validates the X-API-Key or Authorization header.
 func (s *Server) requireAPIKey(r *http.Request) error {
 	expected := s.Config.GetString("api_key")
@@ -157,21 +177,82 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	session, usedTokenID := s.getLeonardoSession("")
-	if session == nil {
-		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 503, "No Leonardo tokens available")
-		writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+	retryPolicy := s.loadGenerationRetryPolicy()
+	triedTokenIDs := make(map[string]bool)
+	var lastFailure *videoGenerationAttemptFailure
+	var lastTokenID string
+	var lastSession *leonardo.TokenSession
+
+	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
+		session, usedTokenID := s.getLeonardoSessionExcluding("", triedTokenIDs)
+		if session == nil {
+			if lastFailure != nil {
+				break
+			}
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 503, "No Leonardo tokens available")
+			writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+			return
+		}
+
+		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
+		if err != nil {
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 400, err.Error())
+			writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
+			return
+		}
+
+		success, failure := s.performLeonardoVideoGeneration(session, usedTokenID, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
+		if failure == nil {
+			writeJSON(w, 200, map[string]interface{}{
+				"created": time.Now().Unix(),
+				"model":   modelID,
+				"data":    []map[string]interface{}{{"url": success.FinalURL}},
+			})
+			return
+		}
+
+		lastFailure = failure
+		lastTokenID = usedTokenID
+		lastSession = session
+
+		if retryPolicy.shouldRetry(failure) && attempt < retryPolicy.MaxAttempts {
+			triedTokenIDs[usedTokenID] = true
+			if s.TokenMgr != nil && usedTokenID != "" {
+				s.TokenMgr.ReportFail(usedTokenID)
+			}
+			delay := retryPolicy.backoffDelay(attempt)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			continue
+		}
+
+		if s.TokenMgr != nil && usedTokenID != "" {
+			if failure.MarkInvalid {
+				s.TokenMgr.ReportInvalid(usedTokenID)
+			} else if retryPolicy.shouldRetry(failure) {
+				s.TokenMgr.ReportFail(usedTokenID)
+			}
+		}
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, failure.StatusCode, failure.Message)
+		writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
 		return
 	}
 
-	imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
-	if err != nil {
-		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 400, err.Error())
-		writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
+	if lastFailure != nil {
+		if s.TokenMgr != nil && lastTokenID != "" {
+			if lastFailure.MarkInvalid {
+				s.TokenMgr.ReportInvalid(lastTokenID)
+			} else if retryPolicy.shouldRetry(lastFailure) {
+				s.TokenMgr.ReportFail(lastTokenID)
+			}
+		}
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, lastTokenID, lastSession, lastFailure.StatusCode, lastFailure.Message)
+		writeJSON(w, lastFailure.StatusCode, errorResp(lastFailure.Message, lastFailure.ErrorType))
 		return
 	}
 
-	s.handleLeonardoVideoGeneration(w, r, session, usedTokenID, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
+	writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
 }
 
 // ---- Helpers ----
@@ -257,6 +338,94 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func (s *Server) loadGenerationRetryPolicy() generationRetryPolicy {
+	policy := generationRetryPolicy{
+		Enabled:     false,
+		MaxAttempts: 1,
+		BackoffBase: time.Second,
+		StatusCodes: map[int]struct{}{},
+	}
+	if s == nil || s.Config == nil {
+		return policy
+	}
+
+	policy.Enabled = s.Config.GetBool("retry_enabled", true)
+	policy.MaxAttempts = s.Config.GetInt("retry_max_attempts", 3)
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
+	}
+	if !policy.Enabled {
+		policy.MaxAttempts = 1
+	}
+
+	backoffSeconds := s.Config.GetFloat("retry_backoff_seconds", 1)
+	if backoffSeconds < 0 {
+		backoffSeconds = 0
+	}
+	policy.BackoffBase = time.Duration(backoffSeconds * float64(time.Second))
+
+	for _, code := range s.Config.GetIntSlice("retry_on_status_codes", []int{429, 451, 500, 502, 503, 504}) {
+		if code > 0 {
+			policy.StatusCodes[code] = struct{}{}
+		}
+	}
+	for _, item := range s.Config.GetStringSlice("retry_on_error_types", []string{"timeout", "connection", "proxy"}) {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item != "" {
+			policy.ErrorMatchers = append(policy.ErrorMatchers, item)
+		}
+	}
+	return policy
+}
+
+func (p generationRetryPolicy) shouldRetry(failure *videoGenerationAttemptFailure) bool {
+	if !p.Enabled || failure == nil {
+		return false
+	}
+	if _, ok := p.StatusCodes[failure.StatusCode]; ok {
+		return true
+	}
+
+	haystacks := []string{
+		strings.ToLower(strings.TrimSpace(failure.Message)),
+		strings.ToLower(strings.TrimSpace(failure.RetryCodeSource)),
+		normalizeRetryMatcher(failure.Message),
+		normalizeRetryMatcher(failure.RetryCodeSource),
+	}
+	for _, matcher := range p.ErrorMatchers {
+		normalizedMatcher := normalizeRetryMatcher(matcher)
+		for _, haystack := range haystacks {
+			if haystack == "" {
+				continue
+			}
+			if strings.Contains(haystack, matcher) || (normalizedMatcher != "" && strings.Contains(haystack, normalizedMatcher)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p generationRetryPolicy) backoffDelay(attempt int) time.Duration {
+	if attempt <= 0 || p.BackoffBase <= 0 {
+		return 0
+	}
+	delay := p.BackoffBase
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+	}
+	return delay
+}
+
+func normalizeRetryMatcher(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(" ", "_", "-", "_", ":", "_", ";", "_", ",", "_", ".", "_", "/", "_", "\\", "_", "(", "_", ")", "_")
+	return replacer.Replace(raw)
+}
+
 type readCloser struct {
 	data []byte
 	pos  int
@@ -300,17 +469,21 @@ func isSupportedSeedanceModel(modelID string) bool {
 	}
 }
 
-func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Request, session *leonardo.TokenSession, usedTokenID string, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) {
+func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSuccess, *videoGenerationAttemptFailure) {
 	if s.LeonardoClient == nil {
-		writeJSON(w, 500, errorResp("Leonardo client not initialized", "server_error"))
-		return
+		return nil, &videoGenerationAttemptFailure{
+			StatusCode:      http.StatusInternalServerError,
+			Message:         "Leonardo client not initialized",
+			ErrorType:       "server_error",
+			RetryCodeSource: "server_error leonardo_client_not_initialized",
+		}
 	}
 
 	genReq := &leonardo.GenerateRequest{
 		Model: modelID,
 		Params: leonardo.GenerateParams{
 			Prompt:         prompt,
-			Mode:           "RESOLUTION_720", // default Leonardo mode for these models
+			Mode:           "RESOLUTION_720",
 			Duration:       duration,
 			Width:          width,
 			Height:         height,
@@ -325,10 +498,14 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 	startTime := time.Now()
 	result, err := s.LeonardoClient.Generate(session, genReq)
 	if err != nil {
-		s.TokenMgr.ReportInvalid(usedTokenID)
-		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 502, fmt.Sprintf("generation failed: %v", err))
-		writeJSON(w, 500, errorResp(fmt.Sprintf("generation failed: %v", err), "server_error"))
-		return
+		statusCode := statusCodeFromGenerationError(err)
+		return nil, &videoGenerationAttemptFailure{
+			StatusCode:      statusCode,
+			Message:         fmt.Sprintf("generation failed: %v", err),
+			ErrorType:       "server_error",
+			RetryCodeSource: extractRetryCodeSource(err.Error()),
+			MarkInvalid:     !isRetryableGenerationError(err),
+		}
 	}
 
 	if s.ReqLog != nil {
@@ -353,8 +530,8 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 
 	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
-		status, err := s.LeonardoClient.PollGenerationStatus(session, result.GenerationID)
-		if err != nil {
+		status, pollErr := s.LeonardoClient.PollGenerationStatus(session, result.GenerationID)
+		if pollErr != nil {
 			continue
 		}
 		elapsed := time.Since(startTime).Seconds()
@@ -363,12 +540,16 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 				s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
 				s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 			}
-			writeJSON(w, 500, errorResp("Generation failed in Leonardo", "server_error"))
-			return
+			return nil, &videoGenerationAttemptFailure{
+				StatusCode:      http.StatusBadGateway,
+				Message:         "Generation failed in Leonardo",
+				ErrorType:       "server_error",
+				RetryCodeSource: "generation_failed failed leonardo_failed",
+			}
 		}
 		if status.Status == "COMPLETE" {
-			detail, err := s.LeonardoClient.GetGenerationDetail(session, result.GenerationID)
-			if err == nil && len(detail.Images) > 0 {
+			detail, detailErr := s.LeonardoClient.GetGenerationDetail(session, result.GenerationID)
+			if detailErr == nil && len(detail.Images) > 0 {
 				var url string
 				for _, img := range detail.Images {
 					if img.MotionMP4 != "" {
@@ -379,21 +560,21 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 				if url != "" {
 					finalURL, materializeErr := s.materializeGeneratedMedia(url, result.GenerationID, "video")
 					if materializeErr != nil {
-						s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 502, fmt.Sprintf("save generated media failed: %v", materializeErr))
-						writeJSON(w, 500, errorResp(fmt.Sprintf("save generated media failed: %v", materializeErr), "server_error"))
-						return
+						return nil, &videoGenerationAttemptFailure{
+							StatusCode:      http.StatusBadGateway,
+							Message:         fmt.Sprintf("save generated media failed: %v", materializeErr),
+							ErrorType:       "server_error",
+							RetryCodeSource: extractRetryCodeSource(materializeErr.Error()),
+						}
 					}
 					if s.ReqLog != nil {
 						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, finalURL, "video", "")
 						s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 					}
-					s.TokenMgr.ReportSuccess(usedTokenID)
-					writeJSON(w, 200, map[string]interface{}{
-						"created": time.Now().Unix(),
-						"model":   modelID,
-						"data":    []map[string]interface{}{{"url": finalURL}},
-					})
-					return
+					if s.TokenMgr != nil {
+						s.TokenMgr.ReportSuccess(usedTokenID)
+					}
+					return &videoGenerationSuccess{FinalURL: finalURL}, nil
 				}
 			}
 		}
@@ -402,7 +583,12 @@ func (s *Server) handleLeonardoVideoGeneration(w http.ResponseWriter, r *http.Re
 		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 504, "", "", "Generation timed out")
 		s.ReqLog.UpdateDuration(result.GenerationID, time.Since(startTime).Seconds())
 	}
-	writeJSON(w, 504, errorResp("Generation timed out", "timeout"))
+	return nil, &videoGenerationAttemptFailure{
+		StatusCode:      http.StatusGatewayTimeout,
+		Message:         "Generation timed out",
+		ErrorType:       "timeout",
+		RetryCodeSource: "timeout generation_timed_out",
+	}
 }
 
 func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {
@@ -580,4 +766,72 @@ func toString(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", value)
 	}
+}
+
+func statusCodeFromGenerationError(err error) int {
+	if err == nil {
+		return http.StatusBadGateway
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, " 429"), strings.Contains(msg, "(429)"), strings.Contains(msg, "returned 429"), strings.Contains(msg, "rate limit"):
+		return http.StatusTooManyRequests
+	case strings.Contains(msg, " 451"), strings.Contains(msg, "(451)"), strings.Contains(msg, "returned 451"):
+		return 451
+	case strings.Contains(msg, " 500"), strings.Contains(msg, "(500)"), strings.Contains(msg, "returned 500"):
+		return http.StatusInternalServerError
+	case strings.Contains(msg, " 502"), strings.Contains(msg, "(502)"), strings.Contains(msg, "returned 502"):
+		return http.StatusBadGateway
+	case strings.Contains(msg, " 503"), strings.Contains(msg, "(503)"), strings.Contains(msg, "returned 503"):
+		return http.StatusServiceUnavailable
+	case strings.Contains(msg, " 504"), strings.Contains(msg, "(504)"), strings.Contains(msg, "returned 504"), strings.Contains(msg, "timeout"):
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+func isRetryableGenerationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "returned 429") ||
+		strings.Contains(msg, "(429)") ||
+		strings.Contains(msg, "proxy")
+}
+
+func extractRetryCodeSource(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+
+	codes := []string{}
+	for _, code := range []string{"429", "451", "500", "502", "503", "504"} {
+		if strings.Contains(raw, code) {
+			codes = append(codes, code)
+		}
+	}
+
+	keywords := []string{}
+	for _, item := range []string{"timeout", "connection", "proxy", "insufficient_tokens", "insufficient tokens", "rate limit", "unexpected eof", "server_error"} {
+		if strings.Contains(raw, item) {
+			keywords = append(keywords, item)
+		}
+	}
+
+	parts := []string{raw, normalizeRetryMatcher(raw)}
+	if len(codes) > 0 {
+		parts = append(parts, strings.Join(codes, " "))
+	}
+	if len(keywords) > 0 {
+		parts = append(parts, strings.Join(keywords, " "))
+	}
+	return strings.Join(parts, " ")
 }

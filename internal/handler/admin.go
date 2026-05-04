@@ -2226,6 +2226,57 @@ func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSess
 	}
 }
 
+func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string]bool) (*leonardo.TokenSession, string) {
+	if tokenID != "" {
+		if excluded != nil && excluded[tokenID] {
+			return nil, ""
+		}
+		return s.getLeonardoSession(tokenID)
+	}
+
+	strategy := "round_robin"
+	if s.Config != nil {
+		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
+	}
+
+	maxAttempts := s.TokenMgr.Count()
+	if maxAttempts < 1 {
+		return nil, ""
+	}
+	if strings.EqualFold(strategy, "random") {
+		maxAttempts *= 2
+	}
+
+	tried := make(map[string]bool)
+	for i := 0; i < maxAttempts; i++ {
+		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
+		if info == nil {
+			return nil, ""
+		}
+
+		foundID := strings.TrimSpace(toString(info["id"]))
+		if foundID == "" || tried[foundID] || (excluded != nil && excluded[foundID]) {
+			continue
+		}
+		tried[foundID] = true
+
+		rawToken := strings.TrimSpace(toString(info["value"]))
+		if rawToken == "" {
+			continue
+		}
+		session := s.getOrCreateLeonardoSession(foundID, rawToken)
+		if session == nil {
+			continue
+		}
+		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
+			continue
+		}
+		return session, foundID
+	}
+	return nil, ""
+}
+
 // getLeonardoSession finds a Leonardo session from the token pool.
 // Returns the session and the token ID used.
 func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, string) {

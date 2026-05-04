@@ -148,6 +148,95 @@ func (m *Manager) GetBool(key string, defaultVal ...bool) bool {
 	}
 }
 
+// GetStringSlice returns a config string slice value.
+func (m *Manager) GetStringSlice(key string, defaultVal ...[]string) []string {
+	v := m.Get(key)
+	if v == nil {
+		if len(defaultVal) > 0 {
+			return append([]string(nil), defaultVal[0]...)
+		}
+		return nil
+	}
+
+	appendString := func(out []string, raw string) []string {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return out
+		}
+		return append(out, raw)
+	}
+
+	var out []string
+	switch val := v.(type) {
+	case []string:
+		for _, item := range val {
+			out = appendString(out, item)
+		}
+	case []interface{}:
+		for _, item := range val {
+			out = appendString(out, toString(item))
+		}
+	case string:
+		for _, item := range strings.Split(val, ",") {
+			out = appendString(out, item)
+		}
+	default:
+		if len(defaultVal) > 0 {
+			return append([]string(nil), defaultVal[0]...)
+		}
+	}
+	return out
+}
+
+// GetIntSlice returns a config integer slice value.
+func (m *Manager) GetIntSlice(key string, defaultVal ...[]int) []int {
+	v := m.Get(key)
+	if v == nil {
+		if len(defaultVal) > 0 {
+			return append([]int(nil), defaultVal[0]...)
+		}
+		return nil
+	}
+
+	appendInt := func(out []int, raw string) []int {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return out
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return out
+		}
+		return append(out, n)
+	}
+
+	var out []int
+	switch val := v.(type) {
+	case []int:
+		out = append(out, val...)
+	case []interface{}:
+		for _, item := range val {
+			switch itemVal := item.(type) {
+			case float64:
+				out = append(out, int(itemVal))
+			case int:
+				out = append(out, itemVal)
+			case string:
+				out = appendInt(out, itemVal)
+			}
+		}
+	case string:
+		for _, item := range strings.Split(val, ",") {
+			out = appendInt(out, item)
+		}
+	default:
+		if len(defaultVal) > 0 {
+			return append([]int(nil), defaultVal[0]...)
+		}
+	}
+	return out
+}
+
 // GetFloat returns a config float64 value.
 func (m *Manager) GetFloat(key string, defaultVal ...float64) float64 {
 	v := m.Get(key)
