@@ -1106,6 +1106,76 @@ func (s *Server) HandleTokenAutoRefresh(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// HandleCookieExport handles POST /api/v1/refresh-profiles/export-cookies.
+func (s *Server) HandleCookieExport(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	selectedIDs := make(map[string]struct{}, len(body.IDs))
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		selectedIDs[id] = struct{}{}
+	}
+
+	tokens := s.TokenMgr.ListFull()
+	items := make([]map[string]interface{}, 0, len(tokens))
+	for _, info := range tokens {
+		tokenID := strings.TrimSpace(toString(info["id"]))
+		if len(selectedIDs) > 0 {
+			if _, ok := selectedIDs[tokenID]; !ok {
+				continue
+			}
+		}
+
+		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+		if platform != "" && platform != "leonardo" {
+			continue
+		}
+
+		cookie := strings.TrimSpace(toString(info["value"]))
+		if cookie == "" {
+			continue
+		}
+
+		name := strings.TrimSpace(toString(info["account_name"]))
+		if name == "" {
+			name = strings.TrimSpace(toString(info["account_email"]))
+		}
+		if name == "" {
+			name = strings.TrimSpace(toString(info["refresh_profile_name"]))
+		}
+		if name == "" {
+			name = tokenID
+		}
+
+		items = append(items, map[string]interface{}{
+			"id":     tokenID,
+			"name":   name,
+			"cookie": cookie,
+		})
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":    true,
+		"items": items,
+		"total": len(items),
+		"count": len(items),
+	})
+}
+
 // HandleStubPost returns ok for unimplemented POST endpoints.
 func (s *Server) HandleStubPost(w http.ResponseWriter, r *http.Request) {
 	if err := s.requireAdmin(r); err != nil {
