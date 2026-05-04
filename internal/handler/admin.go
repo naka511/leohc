@@ -1664,6 +1664,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	s.applyTokenCreditCost(usedTokenID, result.APICreditCost)
 
 	// Log pending request
 	if s.ReqLog != nil {
@@ -2460,6 +2461,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
 				s.ReqLog.UpdateDuration(genID, elapsed)
 			}
+			s.refreshTokenCredits(tokenID, session)
 			return
 		}
 		// Still PENDING, continue polling
@@ -2471,11 +2473,12 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 		s.ReqLog.UpdateByGenerationID(genID, "FAILED", 504, "", "", "Generation polling timed out")
 		s.ReqLog.UpdateDuration(genID, time.Since(startTime).Seconds())
 	}
+	s.refreshTokenCredits(tokenID, session)
 }
 
 // refreshTokenCredits queries latest credits from Leonardo and updates the token pool.
 func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSession) {
-	if tokenID == "" || session == nil {
+	if tokenID == "" || session == nil || s.LeonardoClient == nil || s.TokenMgr == nil {
 		return
 	}
 	credits, err := s.LeonardoClient.QueryCredits(session)
@@ -2487,6 +2490,36 @@ func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSess
 		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		log.Printf("[poll] refreshed credits for token %s: %d remaining", tokenID, credits.TotalTokens)
 	}
+}
+
+// applyTokenCreditCost updates the local token balance immediately after
+// Leonardo accepts a generation request. A later credits query can still
+// correct the exact balance if upstream adjusts it.
+func (s *Server) applyTokenCreditCost(tokenID string, creditCost int) {
+	if tokenID == "" || creditCost <= 0 || s.TokenMgr == nil {
+		return
+	}
+	info := s.TokenMgr.GetByID(tokenID)
+	if info == nil {
+		return
+	}
+	current := toFloat64(info["credits_available"])
+	total := toFloat64(info["credits_total"])
+	if current <= 0 && total <= 0 {
+		return
+	}
+	next := current - float64(creditCost)
+	if next < 0 {
+		next = 0
+	}
+	if total <= 0 {
+		total = current
+	}
+	if err := s.TokenMgr.UpdateCredits(tokenID, next, total); err != nil {
+		log.Printf("[poll] failed to apply credit cost for token %s: %v", tokenID, err)
+		return
+	}
+	log.Printf("[poll] applied credit cost for token %s: -%d, %.0f remaining", tokenID, creditCost, next)
 }
 
 func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string]bool) (*leonardo.TokenSession, string) {

@@ -513,6 +513,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 			MarkInvalid:     !isRetryableGenerationError(err),
 		}
 	}
+	s.applyTokenCreditCost(usedTokenID, result.APICreditCost)
 
 	if s.ReqLog != nil {
 		accountName, accountEmail := s.resolveReqLogAccount(usedTokenID, session)
@@ -531,6 +532,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 			Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
 			Prompt:       prompt,
 			GenerationID: result.GenerationID,
+			CreditCost:   result.APICreditCost,
 			Operation:    "leonardo.generate",
 		})
 	}
@@ -550,6 +552,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 				s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
 				s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
 			}
+			s.refreshTokenCredits(usedTokenID, session)
 			return nil, &videoGenerationAttemptFailure{
 				StatusCode:      http.StatusBadGateway,
 				Message:         "Generation failed in Leonardo",
@@ -570,6 +573,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 				if url != "" {
 					finalURL, materializeErr := s.materializeGeneratedMedia(url, result.GenerationID, "video")
 					if materializeErr != nil {
+						s.refreshTokenCredits(usedTokenID, session)
 						return nil, &videoGenerationAttemptFailure{
 							StatusCode:      http.StatusBadGateway,
 							Message:         fmt.Sprintf("save generated media failed: %v", materializeErr),
@@ -584,6 +588,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 					if s.TokenMgr != nil {
 						s.TokenMgr.ReportSuccess(usedTokenID)
 					}
+					s.refreshTokenCredits(usedTokenID, session)
 					return &videoGenerationSuccess{FinalURL: finalURL}, nil
 				}
 			}
@@ -593,6 +598,7 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 504, "", "", "Generation timed out")
 		s.ReqLog.UpdateDuration(result.GenerationID, time.Since(startTime).Seconds())
 	}
+	s.refreshTokenCredits(usedTokenID, session)
 	return nil, &videoGenerationAttemptFailure{
 		StatusCode:      http.StatusGatewayTimeout,
 		Message:         "Generation timed out",
@@ -775,6 +781,30 @@ func toString(v interface{}) string {
 		return value
 	default:
 		return fmt.Sprintf("%v", value)
+	}
+}
+
+func toFloat64(v interface{}) float64 {
+	switch value := v.(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case int32:
+		return float64(value)
+	case json.Number:
+		f, _ := value.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		return f
+	default:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(fmt.Sprintf("%v", value)), 64)
+		return f
 	}
 }
 
