@@ -11,8 +11,6 @@ import (
 
 	"leo-go/internal/config"
 	"leo-go/internal/handler"
-	"leo-go/internal/provider"
-	"leo-go/internal/provider/adobe"
 	"leo-go/internal/provider/leonardo"
 	"leo-go/internal/reqlog"
 	"leo-go/internal/store"
@@ -55,15 +53,13 @@ func main() {
 	tokenMgr := token.NewManager(sqlStore)
 	log.Printf("[token] pool ready: %d tokens loaded", tokenMgr.Count())
 
-	// Provider registry
-	registry := provider.NewRegistry()
-	adobeClient := adobe.NewClient()
-	registry.Register(adobeClient)
-	defaultProvider, _ := registry.Default()
-
 	// Leonardo client
-	proxy := cfg.GetString("proxy", "")
+	proxy := ""
+	if cfg.GetBool("use_proxy", false) {
+		proxy = cfg.GetString("proxy", "")
+	}
 	leoClient := leonardo.NewClient(proxy)
+	leoClient.SetJWTRefreshMarginMinutes(cfg.GetInt("jwt_refresh_margin_minutes", 5))
 	log.Printf("[leonardo] client initialized")
 
 	reqLogFile := filepath.Join(configDir, "request_logs.json")
@@ -71,13 +67,12 @@ func main() {
 
 	srv := &handler.Server{
 		TokenMgr:       tokenMgr,
-		Provider:       defaultProvider,
-		Registry:       registry,
 		Config:         cfg,
 		GeneratedDir:   generatedDir,
 		LeonardoClient: leoClient,
 		ReqLog:         reqLogStore,
 	}
+	srv.StartTokenAutoRefreshLoop()
 
 	mux := http.NewServeMux()
 
@@ -95,13 +90,11 @@ func main() {
 	// ─── Token management (matches frontend /api/v1/tokens*) ───
 	mux.HandleFunc("/api/v1/tokens/batch", srv.HandleTokenBatchAdd)
 	mux.HandleFunc("/api/v1/tokens/delete-batch", srv.HandleDeleteBatch)
+	mux.HandleFunc("/api/v1/tokens/status-batch", srv.HandleTokenStatusBatch)
 	mux.HandleFunc("/api/v1/tokens/export", srv.HandleTokenExport)
-	// Stubs for not-yet-implemented batch operations
-	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/credits/refresh-batch", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/tokens/success-counts/overwrite-from-logs", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleTokenAutoRefreshBatch)
+	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleTokenRefreshBatch)
+	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleCheckInvalidTokensBatch)
 
 	// Token CRUD (must be after more specific /tokens/xxx routes)
 	mux.HandleFunc("/api/v1/tokens/", func(w http.ResponseWriter, r *http.Request) {
@@ -111,8 +104,6 @@ func main() {
 			srv.HandleTokenStatus(w, r)
 		case strings.HasSuffix(path, "/refresh") && r.Method == "POST":
 			srv.HandleTokenRefresh(w, r)
-		case strings.HasSuffix(path, "/credits/refresh") && r.Method == "POST":
-			srv.HandleTokenCreditsRefresh(w, r)
 		case strings.HasSuffix(path, "/auto-refresh") && r.Method == "PUT":
 			srv.HandleTokenAutoRefresh(w, r)
 		case strings.Contains(path, "/refresh-jobs/"):
@@ -141,14 +132,22 @@ func main() {
 
 	// ─── Logs ───
 	mux.HandleFunc("/api/v1/logs/running", srv.HandleLogsRunning)
-	mux.HandleFunc("/api/v1/logs/failed-accounts", srv.HandleFailedAccounts)
 	mux.HandleFunc("/api/v1/logs/stats", srv.HandleLogsStats)
 	mux.HandleFunc("/api/v1/logs", srv.HandleLogs)
 
-	// ─── Refresh profiles (stubs) ───
-	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleStubPost)
+	// ─── Refresh profiles ───
+	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleImportCookieBatch)
 	mux.HandleFunc("/api/v1/refresh-profiles/export-cookies", srv.HandleStubPost)
-	mux.HandleFunc("/api/v1/proxy/test", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/refresh-profiles/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/import-cookie-jobs/") && r.Method == "GET":
+			srv.HandleImportCookieJob(w, r)
+		default:
+			http.Error(w, "not found", 404)
+		}
+	})
+	mux.HandleFunc("/api/v1/proxy/test", srv.HandleProxyTest)
 
 	// ─── Leonardo API ───
 	mux.HandleFunc("/api/v1/leonardo/validate", srv.HandleLeonardoValidate)

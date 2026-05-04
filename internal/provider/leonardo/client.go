@@ -1,11 +1,14 @@
 package leonardo
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,6 +28,29 @@ const (
 	GraphQLURL   = "https://api.leonardo.ai/v1/graphql"
 	JWTMarginSec = 300 // JWT 过期前 5 分钟就刷新
 )
+
+const (
+	defaultClientTimeout = 120 * time.Second
+	defaultInitWait      = 180 * time.Second
+	s3UploadMaxAttempts  = 3
+	s3UploadRetryDelay   = 2 * time.Second
+)
+
+const defaultJWTRefreshMargin = 5 * time.Minute
+
+func isRetryableGraphQLError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection reset")
+}
 
 // TokenSession holds a Leonardo session with cached JWT.
 type TokenSession struct {
@@ -51,8 +77,9 @@ type Credits struct {
 
 // Client manages Leonardo API interactions.
 type Client struct {
-	httpClient *http.Client
-	proxy      string
+	httpClient       *http.Client
+	proxy            string
+	jwtRefreshMargin time.Duration
 }
 
 // NewClient creates a new Leonardo client.
@@ -66,10 +93,34 @@ func NewClient(proxy string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   30 * time.Second,
+			Timeout:   defaultClientTimeout,
 		},
-		proxy: proxy,
+		proxy:            proxy,
+		jwtRefreshMargin: defaultJWTRefreshMargin,
 	}
+}
+
+func (c *Client) SetJWTRefreshMarginMinutes(minutes int) {
+	if c == nil {
+		return
+	}
+	if minutes < 0 {
+		minutes = 0
+	}
+	if minutes > 1440 {
+		minutes = 1440
+	}
+	c.jwtRefreshMargin = time.Duration(minutes) * time.Minute
+}
+
+func (c *Client) jwtRefreshMarginDuration() time.Duration {
+	if c == nil {
+		return defaultJWTRefreshMargin
+	}
+	if c.jwtRefreshMargin < 0 {
+		return 0
+	}
+	return c.jwtRefreshMargin
 }
 
 // ──────────────────────────────────────────────────────────
@@ -86,8 +137,8 @@ type jwtClaims struct {
 }
 
 type hasuraClaims struct {
-	UserID      string   `json:"x-hasura-user-id"`
-	DefaultRole string   `json:"x-hasura-default-role"`
+	UserID       string   `json:"x-hasura-user-id"`
+	DefaultRole  string   `json:"x-hasura-default-role"`
 	AllowedRoles []string `json:"x-hasura-allowed-roles"`
 }
 
@@ -209,11 +260,7 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 	}
 
 	if resp.StatusCode != 200 {
-		snippet := string(body)
-		if len(snippet) > 200 {
-			snippet = snippet[:200]
-		}
-		return fmt.Errorf("get-session returned %d: %s", resp.StatusCode, snippet)
+		return formatSessionHTTPError(resp.StatusCode, body)
 	}
 
 	// Parse response - Leonardo's get-session returns JSON with session info
@@ -254,6 +301,27 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 		session.Email, session.JWTExpiry.Format(time.RFC3339), session.HasuraUserID)
 
 	return nil
+}
+
+func formatSessionHTTPError(statusCode int, body []byte) error {
+	if statusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("Leonardo rate limited get-session (429). Wait a minute before retrying refresh")
+	}
+
+	snippet := strings.TrimSpace(string(body))
+	if snippet == "" {
+		return fmt.Errorf("get-session returned %d", statusCode)
+	}
+
+	snippetLower := strings.ToLower(snippet)
+	if strings.HasPrefix(snippetLower, "<!doctype html") || strings.HasPrefix(snippetLower, "<html") {
+		return fmt.Errorf("get-session returned %d with an HTML error page", statusCode)
+	}
+
+	if len(snippet) > 200 {
+		snippet = snippet[:200]
+	}
+	return fmt.Errorf("get-session returned %d: %s", statusCode, snippet)
 }
 
 // extractJWT tries to find the JWT in the session response.
@@ -305,7 +373,7 @@ func getKeys(m map[string]interface{}) []string {
 // EnsureValidJWT checks if the JWT is still valid, refreshes if needed.
 func (c *Client) EnsureValidJWT(session *TokenSession) error {
 	session.mu.RLock()
-	needsRefresh := session.JWT == "" || time.Now().Add(time.Duration(JWTMarginSec)*time.Second).After(session.JWTExpiry)
+	needsRefresh := session.JWT == "" || time.Now().Add(c.jwtRefreshMarginDuration()).After(session.JWTExpiry)
 	session.mu.RUnlock()
 
 	if needsRefresh {
@@ -319,7 +387,7 @@ func (c *Client) EnsureValidJWT(session *TokenSession) error {
 func (s *TokenSession) IsJWTValid() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.JWT != "" && time.Now().Add(time.Duration(JWTMarginSec)*time.Second).Before(s.JWTExpiry)
+	return s.JWT != "" && time.Now().Before(s.JWTExpiry)
 }
 
 // GetJWTRemainingSeconds returns seconds until JWT expiry.
@@ -549,32 +617,32 @@ type VideoRef struct {
 
 // GenerateRequest is the input for video generation.
 type GenerateRequest struct {
-	Model  string           `json:"model"`
-	Public bool             `json:"public"`
-	Params GenerateParams   `json:"parameters"`
+	Model  string         `json:"model"`
+	Public bool           `json:"public"`
+	Params GenerateParams `json:"parameters"`
 }
 
 // GenerateParams are the generation parameters.
 type GenerateParams struct {
 	Prompt         string     `json:"prompt"`
-	Mode           string     `json:"mode"`            // e.g. "RESOLUTION_720"
-	PromptEnhance  string     `json:"prompt_enhance"`  // "OFF" or "ON"
+	Mode           string     `json:"mode"`           // e.g. "RESOLUTION_720"
+	PromptEnhance  string     `json:"prompt_enhance"` // "OFF" or "ON"
 	Quantity       int        `json:"quantity"`
-	Duration       int        `json:"duration"`         // 4-15 seconds
+	Duration       int        `json:"duration"` // 4-15 seconds
 	MotionHasAudio bool       `json:"motion_has_audio"`
 	Width          int        `json:"width"`
 	Height         int        `json:"height"`
-	Seed           int        `json:"seed"`             // -1 for random
-	ImageRefs      []ImageRef `json:"image_refs,omitempty"`      // multi-image reference guidance
-	StartFrame     []FrameRef `json:"start_frame,omitempty"`     // start frame (first frame)
-	EndFrame       []FrameRef `json:"end_frame,omitempty"`       // end frame (last frame)
-	VideoRefs      []VideoRef `json:"video_refs,omitempty"`      // video reference guidance
+	Seed           int        `json:"seed"`                  // -1 for random
+	ImageRefs      []ImageRef `json:"image_refs,omitempty"`  // multi-image reference guidance
+	StartFrame     []FrameRef `json:"start_frame,omitempty"` // start frame (first frame)
+	EndFrame       []FrameRef `json:"end_frame,omitempty"`   // end frame (last frame)
+	VideoRefs      []VideoRef `json:"video_refs,omitempty"`  // video reference guidance
 }
 
 // GenerateResponse is the response from the Generate mutation.
 type GenerateResponse struct {
-	GenerationID   string `json:"generationId"`
-	APICreditCost  int    `json:"apiCreditCost"`
+	GenerationID  string `json:"generationId"`
+	APICreditCost int    `json:"apiCreditCost"`
 }
 
 // GenerationStatus holds the status of a generation.
@@ -585,22 +653,22 @@ type GenerationStatus struct {
 
 // GenerationDetail holds detailed generation info including video URLs.
 type GenerationDetail struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	Prompt     string `json:"prompt"`
-	ModelID    string `json:"modelId"`
-	Width      int    `json:"imageWidth"`
-	Height     int    `json:"imageHeight"`
-	CreatedAt  string `json:"createdAt"`
-	Images     []GeneratedImage `json:"generated_images"`
+	ID        string           `json:"id"`
+	Status    string           `json:"status"`
+	Prompt    string           `json:"prompt"`
+	ModelID   string           `json:"modelId"`
+	Width     int              `json:"imageWidth"`
+	Height    int              `json:"imageHeight"`
+	CreatedAt string           `json:"createdAt"`
+	Images    []GeneratedImage `json:"generated_images"`
 }
 
 // GeneratedImage holds info about a generated image/video.
 type GeneratedImage struct {
-	ID          string `json:"id"`
-	URL         string `json:"url"`
-	MotionMP4   string `json:"motionMP4URL"`
-	MotionGIF   string `json:"motionGIFURL"`
+	ID        string `json:"id"`
+	URL       string `json:"url"`
+	MotionMP4 string `json:"motionMP4URL"`
+	MotionGIF string `json:"motionGIFURL"`
 }
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
@@ -951,22 +1019,66 @@ func min(a, b int) int {
 // Image Upload for Guidance (multi-image reference)
 // ──────────────────────────────────────────────────────────
 
-const uploadInitMutation = `mutation UploadInitImage($arg1: InitImageUploadInput!) {
-  uploadInitImage(arg1: $arg1) {
-    id
-    fields
-    key
+const uploadImageMutation = `mutation UploadImage($uploadImageInput: UploadImageInput!) {
+  uploadImage(arg1: $uploadImageInput) {
+    uploadId
     url
+    fields
+    __typename
+  }
+}`
+
+const initImageModerationQuery = `query GetInitImageModeration($akUUID: uuid!) {
+  init_image_moderation(where: {akUUID: {_eq: $akUUID}}) {
+    akUUID
+    initImageId
+    checkStatus
+    __typename
+  }
+}`
+
+const uploadedMediaByIDQuery = `query GetUploadedMediaById($uploadId: uuid!) {
+  uploaded_media(where: {id: {_eq: $uploadId}}, limit: 1) {
+    duration
+    fileSize
+    height
+    id
+    status
+    statusReason
+    thumbnailUrl
+    url
+    video_fps
+    videoCodec
+    width
     __typename
   }
 }`
 
 // UploadInitResult holds the response from the upload init mutation.
 type UploadInitResult struct {
-	ID     string `json:"id"`
-	Fields string `json:"fields"`
-	Key    string `json:"key"`
-	URL    string `json:"url"`
+	UploadID string `json:"uploadId"`
+	Fields   string `json:"fields"`
+	URL      string `json:"url"`
+}
+
+type InitImageModeration struct {
+	AKUUID      string `json:"akUUID"`
+	InitImageID string `json:"initImageId"`
+	CheckStatus string `json:"checkStatus"`
+}
+
+type UploadedMedia struct {
+	ID           string   `json:"id"`
+	Status       string   `json:"status"`
+	StatusReason *string  `json:"statusReason"`
+	URL          string   `json:"url"`
+	ThumbnailURL *string  `json:"thumbnailUrl"`
+	Duration     *float64 `json:"duration"`
+	FileSize     *int64   `json:"fileSize"`
+	Height       *int     `json:"height"`
+	Width        *int     `json:"width"`
+	VideoFPS     *float64 `json:"video_fps"`
+	VideoCodec   *string  `json:"videoCodec"`
 }
 
 // UploadInitImage initializes an image upload slot on Leonardo.
@@ -985,13 +1097,14 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 	}
 
 	gqlReq := graphqlRequest{
-		OperationName: "UploadInitImage",
+		OperationName: "UploadImage",
 		Variables: map[string]interface{}{
-			"arg1": map[string]interface{}{
-				"fileType": ext,
+			"uploadImageInput": map[string]interface{}{
+				"uploadType": "INIT",
+				"extension":  ext,
 			},
 		},
-		Query: uploadInitMutation,
+		Query: uploadImageMutation,
 	}
 
 	body, err := c.doGraphQL(jwt, gqlReq)
@@ -1001,7 +1114,7 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 
 	var gqlResp struct {
 		Data struct {
-			UploadInitImage UploadInitResult `json:"uploadInitImage"`
+			UploadImage UploadInitResult `json:"uploadImage"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
@@ -1016,67 +1129,317 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 		return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
 	}
 
-	result := &gqlResp.Data.UploadInitImage
-	log.Printf("[Leonardo] Upload init: id=%s, url=%s", result.ID, result.URL)
+	result := &gqlResp.Data.UploadImage
+	log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
 	return result, nil
 }
 
-// UploadImageToS3 uploads the actual image data to the S3 presigned URL.
-// fieldsJSON is the JSON string returned by uploadInitImage, containing S3 form fields.
-func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, key string, imageData []byte, contentType string) error {
+// WaitForInitImage polls Leonardo moderation status until the uploaded image
+// becomes available as a usable init image ID.
+func (c *Client) WaitForInitImage(session *TokenSession, uploadID string, timeout time.Duration) (string, error) {
+	if strings.TrimSpace(uploadID) == "" {
+		return "", fmt.Errorf("upload id is required")
+	}
+	if timeout <= 0 {
+		timeout = defaultInitWait
+	}
+	if err := c.EnsureValidJWT(session); err != nil {
+		return "", fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollInterval := 1500 * time.Millisecond
+	lastStatus := ""
+
+	for time.Now().Before(deadline) {
+		session.mu.RLock()
+		jwt := session.JWT
+		session.mu.RUnlock()
+
+		gqlReq := graphqlRequest{
+			OperationName: "GetInitImageModeration",
+			Variables: map[string]interface{}{
+				"akUUID": uploadID,
+			},
+			Query: initImageModerationQuery,
+		}
+
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			if isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Transient init image polling error for uploadID=%s: %v; retrying", uploadID, err)
+				time.Sleep(pollInterval)
+				continue
+			}
+			return "", err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				InitImageModeration []InitImageModeration `json:"init_image_moderation"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return "", fmt.Errorf("parse init image moderation response: %w", err)
+		}
+
+		if len(gqlResp.Errors) > 0 {
+			return "", fmt.Errorf("init image moderation error: %s", gqlResp.Errors[0].Message)
+		}
+
+		if len(gqlResp.Data.InitImageModeration) > 0 {
+			item := gqlResp.Data.InitImageModeration[0]
+			lastStatus = strings.ToUpper(strings.TrimSpace(item.CheckStatus))
+			if strings.TrimSpace(item.InitImageID) != "" {
+				return item.InitImageID, nil
+			}
+			switch lastStatus {
+			case "FAILED", "REJECTED", "BLOCKED", "ERROR":
+				return "", fmt.Errorf("init image moderation %s", strings.ToLower(lastStatus))
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	if lastStatus != "" {
+		return "", fmt.Errorf("timed out waiting for init image id (last status: %s)", lastStatus)
+	}
+	return "", fmt.Errorf("timed out waiting for init image moderation")
+}
+
+// WaitForUploadedMedia polls the uploaded_media table until the staged upload
+// becomes a usable video asset with COMPLETE status.
+func (c *Client) WaitForUploadedMedia(session *TokenSession, uploadID string, timeout time.Duration) (*UploadedMedia, error) {
+	if strings.TrimSpace(uploadID) == "" {
+		return nil, fmt.Errorf("upload id is required")
+	}
+	if timeout <= 0 {
+		timeout = defaultInitWait
+	}
+	if err := c.EnsureValidJWT(session); err != nil {
+		return nil, fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollInterval := 1500 * time.Millisecond
+	lastStatus := ""
+	lastReason := ""
+
+	for time.Now().Before(deadline) {
+		session.mu.RLock()
+		jwt := session.JWT
+		session.mu.RUnlock()
+
+		gqlReq := graphqlRequest{
+			OperationName: "GetUploadedMediaById",
+			Variables: map[string]interface{}{
+				"uploadId": uploadID,
+			},
+			Query: uploadedMediaByIDQuery,
+		}
+
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			if isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Transient uploaded_media polling error for uploadID=%s: %v; retrying", uploadID, err)
+				time.Sleep(pollInterval)
+				continue
+			}
+			return nil, err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				UploadedMedia []UploadedMedia `json:"uploaded_media"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse uploaded media response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("uploaded media query error: %s", gqlResp.Errors[0].Message)
+		}
+
+		if len(gqlResp.Data.UploadedMedia) > 0 {
+			item := gqlResp.Data.UploadedMedia[0]
+			lastStatus = strings.ToUpper(strings.TrimSpace(item.Status))
+			if item.StatusReason != nil {
+				lastReason = strings.TrimSpace(*item.StatusReason)
+			}
+			switch lastStatus {
+			case "COMPLETE", "COMPLETED", "READY":
+				return &item, nil
+			case "FAILED", "REJECTED", "BLOCKED", "ERROR":
+				if lastReason != "" {
+					return nil, fmt.Errorf("uploaded media %s: %s", strings.ToLower(lastStatus), lastReason)
+				}
+				return nil, fmt.Errorf("uploaded media %s", strings.ToLower(lastStatus))
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	if lastStatus != "" {
+		if lastReason != "" {
+			return nil, fmt.Errorf("timed out waiting for uploaded media completion (last status: %s, reason: %s)", lastStatus, lastReason)
+		}
+		return nil, fmt.Errorf("timed out waiting for uploaded media completion (last status: %s)", lastStatus)
+	}
+	return nil, fmt.Errorf("timed out waiting for uploaded media")
+}
+
+func parseUploadFields(fieldsJSON string) (map[string]string, error) {
 	var fields map[string]string
 	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
-		return fmt.Errorf("parse upload fields: %w", err)
+		return nil, fmt.Errorf("parse upload fields: %w", err)
 	}
 
-	// Build multipart form
-	var buf strings.Builder
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("upload fields were empty")
+	}
+
+	return fields, nil
+}
+
+func inferUploadFilename(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/png":
+		return "upload.png"
+	case "image/webp":
+		return "upload.webp"
+	case "image/gif":
+		return "upload.gif"
+	case "image/bmp":
+		return "upload.bmp"
+	case "image/tiff":
+		return "upload.tiff"
+	case "video/mp4":
+		return "upload.mp4"
+	case "video/quicktime":
+		return "upload.mov"
+	case "video/webm":
+		return "upload.webm"
+	case "video/x-msvideo":
+		return "upload.avi"
+	case "video/x-matroska":
+		return "upload.mkv"
+	default:
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "video/") {
+			return "upload.mp4"
+		}
+		return "upload.jpg"
+	}
+}
+
+func buildS3UploadBody(fields map[string]string, imageData []byte, contentType string) ([]byte, string) {
 	boundary := "----LeoUpload" + fmt.Sprintf("%d", time.Now().UnixNano())
+	var body bytes.Buffer
 
-	// Add fields from the presigned response
 	for k, v := range fields {
-		buf.WriteString("--" + boundary + "\r\n")
-		buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", k, v))
+		body.WriteString("--" + boundary + "\r\n")
+		body.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", k, v))
 	}
 
-	// Add key
-	buf.WriteString("--" + boundary + "\r\n")
-	buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"key\"\r\n\r\n%s\r\n", key))
-
-	// Add file
-	buf.WriteString("--" + boundary + "\r\n")
+	body.WriteString("--" + boundary + "\r\n")
 	if contentType == "" {
 		contentType = "image/jpeg"
 	}
-	buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"file\"; filename=\"upload.jpg\"\r\nContent-Type: %s\r\n\r\n", contentType))
+	body.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n", inferUploadFilename(contentType)))
+	body.WriteString(fmt.Sprintf("Content-Type: %s\r\n\r\n", contentType))
+	body.Write(imageData)
+	body.WriteString("\r\n--" + boundary + "--\r\n")
 
-	// Combine: prefix + binary data + suffix
-	prefix := []byte(buf.String())
-	suffix := []byte("\r\n--" + boundary + "--\r\n")
+	return body.Bytes(), boundary
+}
 
-	fullBody := make([]byte, 0, len(prefix)+len(imageData)+len(suffix))
-	fullBody = append(fullBody, prefix...)
-	fullBody = append(fullBody, imageData...)
-	fullBody = append(fullBody, suffix...)
+func isRetryableUploadError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
 
-	req, err := http.NewRequest("POST", uploadURL, strings.NewReader(string(fullBody)))
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "connection reset by peer"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "temporary failure"),
+		strings.Contains(msg, "temporarily unavailable"),
+		strings.Contains(msg, "unexpected eof"),
+		strings.Contains(msg, "eof"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isRetryableUploadStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return statusCode >= 500
+	}
+}
+
+// UploadImageToS3 uploads the actual image data to the S3 presigned URL.
+// fieldsJSON is the JSON string returned by uploadImage, containing S3 form fields.
+func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData []byte, contentType string) error {
+	fields, err := parseUploadFields(fieldsJSON)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("s3 upload failed: %w", err)
-	}
-	defer resp.Body.Close()
+	body, boundary := buildS3UploadBody(fields, imageData, contentType)
 
-	if resp.StatusCode >= 300 {
+	for attempt := 1; attempt <= s3UploadMaxAttempts; attempt++ {
+		req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if attempt < s3UploadMaxAttempts && isRetryableUploadError(err) {
+				log.Printf("[Leonardo] S3 upload attempt %d/%d failed: %v; retrying", attempt, s3UploadMaxAttempts, err)
+				time.Sleep(time.Duration(attempt) * s3UploadRetryDelay)
+				continue
+			}
+			return fmt.Errorf("s3 upload failed after %d attempt(s): %w", attempt, err)
+		}
+
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("s3 upload returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 300)]))
+		resp.Body.Close()
+
+		if resp.StatusCode < 300 {
+			if attempt > 1 {
+				log.Printf("[Leonardo] Image uploaded to S3 successfully on attempt %d/%d", attempt, s3UploadMaxAttempts)
+			} else {
+				log.Printf("[Leonardo] Image uploaded to S3 successfully")
+			}
+			return nil
+		}
+
+		snippet := string(respBody[:min(len(respBody), 300)])
+		statusErr := fmt.Errorf("s3 upload returned %d: %s", resp.StatusCode, snippet)
+		if attempt < s3UploadMaxAttempts && isRetryableUploadStatus(resp.StatusCode) {
+			log.Printf("[Leonardo] S3 upload attempt %d/%d returned retryable status %d; retrying", attempt, s3UploadMaxAttempts, resp.StatusCode)
+			time.Sleep(time.Duration(attempt) * s3UploadRetryDelay)
+			continue
+		}
+		return statusErr
 	}
 
-	log.Printf("[Leonardo] Image uploaded to S3 successfully")
-	return nil
+	return fmt.Errorf("s3 upload failed after %d attempt(s)", s3UploadMaxAttempts)
 }
-

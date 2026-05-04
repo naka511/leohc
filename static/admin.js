@@ -64,6 +64,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const exportTokensBtn = document.getElementById("exportTokensBtn");
   const exportCookiesBtn = document.getElementById("exportCookiesBtn");
   const deleteTokensBatchBtn = document.getElementById("deleteTokensBatchBtn");
+  const enableTokensBatchBtn = document.getElementById("enableTokensBatchBtn");
+  const disableTokensBatchBtn = document.getElementById("disableTokensBatchBtn");
   const enableAutoRefreshBatchBtn = document.getElementById("enableAutoRefreshBatchBtn");
   const disableAutoRefreshBatchBtn = document.getElementById("disableAutoRefreshBatchBtn");
   const refreshTokensBatchBtn = document.getElementById("refreshTokensBatchBtn");
@@ -79,8 +81,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const taskReportSummary = document.getElementById("taskReportSummary");
   const taskReportCurrent = document.getElementById("taskReportCurrent");
   const taskReportItems = document.getElementById("taskReportItems");
-  const refreshBtn = document.getElementById("refreshBtn");
-  const refreshCreditsBatchBtn = document.getElementById("refreshCreditsBatchBtn");
   const tokenSelectAll = document.getElementById("tokenSelectAll");
   const tbody = document.querySelector("#tokenTable tbody");
   const tokenTotalCount = document.getElementById("tokenTotalCount");
@@ -106,7 +106,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let latestTokenPagination = null;
   let activeTaskTracker = null;
   const TOKEN_PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000];
-  const TOKEN_PAGE_SIZE_STORAGE_KEY = "adobe2api.tokenPageSize";
+  const TOKEN_PAGE_SIZE_STORAGE_KEY = "leo-go.tokenPageSize";
   function readTokenPageSize() {
     try {
       const stored = Number(localStorage.getItem(TOKEN_PAGE_SIZE_STORAGE_KEY) || 50);
@@ -214,6 +214,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const selectedCount = tokenSelectedIds.size;
     if (tokenSelectedCount) tokenSelectedCount.textContent = String(selectedCount);
     if (clearTokenSelectionBtn) clearTokenSelectionBtn.disabled = selectedCount <= 0;
+    if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = selectedCount <= 0;
+    if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = selectedCount <= 0;
     if (enableAutoRefreshBatchBtn) enableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (disableAutoRefreshBatchBtn) disableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (refreshTokensBatchBtn) refreshTokensBatchBtn.disabled = selectedCount <= 0;
@@ -297,19 +299,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function formatCredits(token) {
     const available = Number(token?.credits_available);
-    const total = Number(token?.credits_total);
-    const availableUntil = String(token?.credits_available_until || "").trim();
     const err = String(token?.credits_error || "").trim();
 
     if (err) {
-      return `<span style="color:#ffb4bc;">刷新失败</span><br><span style="color:#7f96ad;">${escapeHtml(err)}</span>`;
+      return `<span style="color:#ffb4bc;" title="${escapeHtml(err)}">刷新失败</span>`;
     }
-    if (!Number.isFinite(available) || !Number.isFinite(total)) {
+    if (!Number.isFinite(available)) {
       return `<span style="color:#7f96ad;">未获取</span>`;
     }
 
-    const resetText = availableUntil ? new Date(availableUntil).toLocaleString() : "-";
-    return `<span style="color:#a8bfd8;">${available} / ${total}</span><br><span style="color:#7f96ad;">重置 ${resetText}</span>`;
+    return `<span style="color:#a8bfd8;">${available}</span>`;
+  }
+
+  function formatTokenSuccessCounts(token) {
+    const standard = Number(token?.seedance_standard_success_count || 0);
+    const fast = Number(token?.seedance_fast_success_count || 0);
+    const total = Number(token?.success_count || 0);
+    const parts = [];
+    for (let i = 0; i < standard; i += 1) parts.push("S");
+    for (let i = 0; i < fast; i += 1) parts.push("F");
+    const text = parts.length ? parts.join("+") : "0";
+    const title = `video-2.0: ${standard} 次；video-2.0-fast: ${fast} 次；总成功: ${total} 次`;
+    const color = total > 0 ? "#4de2c4" : "#a8bfd8";
+    return `<span style="color:${color};" title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
   }
 
   function renderTable(tokens, summary = null, pagination = null) {
@@ -354,12 +366,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       const accountName = accountNameSafe || '<span style="color:#7f96ad;">手动 Token</span>';
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';
       // Platform badge
-      const platformStr = String(t.platform || "adobe").toLowerCase();
+      const platformStr = String(t.platform || "leonardo").toLowerCase();
       const platformBadge = platformStr === "leonardo"
         ? '<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-bottom:2px;">Leonardo</span><br>'
         : '';
       const autoEnabled = t.auto_refresh && t.auto_refresh_enabled !== false;
-      const canAutoRefresh = t.auto_refresh || t.platform === "leonardo";
+      const canAutoRefresh = t.auto_refresh || platformStr === "leonardo";
       const autoRefreshCell = canAutoRefresh
         ? `<div style="display: flex; align-items: center;"><button class="switch-btn ${autoEnabled ? "on" : "off"}" onclick="toggleAutoRefresh('${t.id}', ${autoEnabled ? "false" : "true"})" title="${autoEnabled ? "点击关闭自动刷新" : "点击开启自动刷新"}"><span class="switch-knob"></span></button><span class="switch-text">${autoEnabled ? "开启" : "关闭"}</span></div>`
         : `<div style="display: flex; align-items: center;"><button class="switch-btn off" disabled title="手动 token 不支持自动刷新"><span class="switch-knob"></span></button><span class="switch-text" style="color:#7f96ad;">手动</span></div>`;
@@ -369,7 +381,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // Token value display: use value_preview (masked), fallback to value
       const tokenDisplay = escapeHtml(String(t.value_preview || t.value || "***"));
 
-      const canRefresh = t.auto_refresh || t.platform === "leonardo";
+      const canRefresh = t.auto_refresh || platformStr === "leonardo";
       const refreshTokenBtn = canRefresh
         ? `<button class="action-mini" onclick="refreshToken('${t.id}')">刷新Token</button>`
         : `<button class="action-mini" disabled title="仅自动刷新 token 支持刷新">刷新Token</button>`;
@@ -378,7 +390,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         : `<button class="action-mini" onclick="toggleToken('${t.id}', '${isStatusActive ? 'disabled' : 'active'}')">${isStatusActive ? '禁用Token' : '启用Token'}</button>`;
       const actionsGrid = `
         <div class="action-btns">
-          <button class="action-mini" onclick="refreshTokenCredits('${t.id}')">刷新积分</button>
           ${refreshTokenBtn}
           ${statusBtn}
           <button class="action-mini danger" onclick="deleteToken('${t.id}')">删除Token</button>
@@ -392,7 +403,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
         <td>${autoRefreshCell}</td>
         <td style="font-size:12px; line-height:1.35;">${formatCredits(t)}</td>
-        <td style="color: ${Number(t.success_count || 0) > 0 ? '#4de2c4' : '#a8bfd8'};">${Number(t.success_count || 0)}</td>
+        <td>${formatTokenSuccessCounts(t)}</td>
         <td style="font-size:12px; line-height:1.35;">${formatExpiry(t)}</td>
         <td>${actionsGrid}</td>
       `;
@@ -402,7 +413,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   addBtn.addEventListener("click", async () => {
-    const platform = document.getElementById("tokenPlatformSelect")?.value || "adobe";
+    const platform = document.getElementById("tokenPlatformSelect")?.value || "leonardo";
     let tokens = [];
 
     if (platform === "leonardo") {
@@ -469,16 +480,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       showMsg(addMsg, err.message || "导入失败", true);
     }
     addBtn.disabled = false;
-  });
-
-  refreshBtn.addEventListener("click", async () => {
-    showToast("Token 列表刷新中...", false, { duration: 0 });
-    try {
-      await loadTokens();
-      showToast("Token 列表已刷新", false);
-    } catch (err) {
-      showToast("Token 列表刷新失败", true);
-    }
   });
 
   [tokenStatusFilter, tokenCreditsFilter].forEach((filterEl) => {
@@ -561,6 +562,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Platform selector: toggle help text and placeholder
   const tokenPlatformSelect = document.getElementById("tokenPlatformSelect");
   const leonardoCookieHelp = document.getElementById("leonardoCookieHelp");
+  const syncTokenPlatformHelp = () => {
+    if (leonardoCookieHelp) leonardoCookieHelp.style.display = "block";
+    if (tokenInput) {
+      tokenInput.placeholder = "粘贴完整 Cookie 字符串（从浏览器 F12 Network 中复制）\n\n例如：\n__Secure-better-auth.session_token=AlYJi...; __Secure-better-auth.session_data.0=eyJ...; ...";
+    }
+  };
   if (tokenPlatformSelect) {
     tokenPlatformSelect.addEventListener("change", () => {
       const isLeo = tokenPlatformSelect.value === "leonardo";
@@ -572,6 +579,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     });
   }
+  syncTokenPlatformHelp();
 
   if (openCookieImportBtn) {
     openCookieImportBtn.addEventListener("click", async () => {
@@ -655,30 +663,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   };
 
-  window.refreshTokenCredits = async (id) => {
-    showToast("Token 积分刷新中...", false, { duration: 0 });
-    try {
-      const res = await fetch(`/api/v1/tokens/${id}/credits/refresh`, { method: "POST" });
-      if (!res.ok) {
-        let detail = "刷新积分失败";
-        try {
-          const body = await res.json();
-          detail = body.detail || JSON.stringify(body);
-        } catch (_) {
-          detail = await res.text();
-        }
-        alert(detail || "刷新积分失败");
-        showToast(`刷新积分失败：${detail || "unknown error"}`, true);
-        return;
-      }
-      await loadTokens();
-      showToast("Token 积分刷新成功", false);
-    } catch (err) {
-      alert("刷新积分失败");
-      showToast("Token 积分刷新失败", true);
-    }
-  };
-
   window.toggleAutoRefresh = async (id, enabled) => {
     try {
       const res = await fetch(`/api/v1/tokens/${id}/auto-refresh?enabled=${enabled ? "true" : "false"}`, {
@@ -700,6 +684,57 @@ document.addEventListener("DOMContentLoaded", async () => {
       alert("自动刷新设置失败");
     }
   };
+
+  async function setSelectedTokenStatus(status) {
+    const selectedIds = Array.from(tokenSelectedIds);
+    if (!selectedIds.length) {
+      alert("请先选择要操作的 Token");
+      return;
+    }
+    const isEnable = status === "active";
+    const actionText = isEnable ? "启用" : "禁用";
+    if (!confirm(`确定批量${actionText}选中的 ${selectedIds.length} 个 Token 吗？`)) return;
+
+    const targetBtn = isEnable ? enableTokensBatchBtn : disableTokensBatchBtn;
+    if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = true;
+    if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = true;
+    showToast(`批量${actionText} Token 中...`, false, { duration: 0 });
+    try {
+      const res = await fetch("/api/v1/tokens/status-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds, status }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.detail || `批量${actionText} Token 失败`);
+      }
+      const updated = Number(data.updated_count || 0);
+      const missing = Number(data.missing_count || 0);
+      const failed = Number(data.failed_count || 0);
+      showToast(
+        `批量${actionText}完成：成功 ${updated}，未找到 ${missing}，失败 ${failed}`,
+        failed > 0,
+        { duration: 6000 }
+      );
+      await loadTokens();
+    } catch (err) {
+      showToast(err.message || `批量${actionText} Token 失败`, true);
+    } finally {
+      if (enableTokensBatchBtn) enableTokensBatchBtn.disabled = false;
+      if (disableTokensBatchBtn) disableTokensBatchBtn.disabled = false;
+      if (targetBtn) targetBtn.disabled = false;
+      updateTokenSelectionSummary();
+    }
+  }
+
+  if (enableTokensBatchBtn) {
+    enableTokensBatchBtn.addEventListener("click", () => setSelectedTokenStatus("active"));
+  }
+
+  if (disableTokensBatchBtn) {
+    disableTokensBatchBtn.addEventListener("click", () => setSelectedTokenStatus("disabled"));
+  }
 
   async function setSelectedAutoRefresh(enabled) {
     const selectedIds = Array.from(tokenSelectedIds);
@@ -788,22 +823,11 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
         const data = await res.json();
-        const jobId = String(data?.background_refresh?.job_id || "").trim();
-        if (!jobId) {
-          throw new Error("刷新任务创建失败");
-        }
-        await trackBackgroundJob({
-          title: "批量刷新 Token 进度",
-          initialPayload: data,
-          pollUrl: `/api/v1/tokens/refresh-jobs/${encodeURIComponent(jobId)}`,
-          onComplete: async (payload) => {
-            await loadTokens();
-            const ok = Number(payload?.refreshed_count || payload?.success_count || 0);
-            const skipped = Number(payload?.skipped_count || 0);
-            const fail = Number(payload?.failed_count || 0);
-            showToast(`批量刷新 Token 完成：成功 ${ok}，跳过 ${skipped}，失败 ${fail}`, fail > 0, { duration: 7000 });
-          },
-        });
+        await loadTokens();
+        const ok = Number(data.refreshed_count || data.success_count || 0);
+        const skipped = Number(data.skipped_count || 0);
+        const fail = Number(data.failed_count || 0);
+        showToast(`批量刷新 Token 完成：成功 ${ok}，跳过 ${skipped}，失败 ${fail}`, fail > 0, { duration: 7000 });
       } catch (err) {
         showToast(err.message || "批量刷新 Token 失败", true);
       } finally {
@@ -855,40 +879,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       } finally {
         checkInvalidTokensBatchBtn.disabled = false;
         updateTokenSelectionSummary();
-      }
-    });
-  }
-
-  if (refreshCreditsBatchBtn) {
-    refreshCreditsBatchBtn.addEventListener("click", async () => {
-      refreshCreditsBatchBtn.disabled = true;
-      showToast("批量刷新积分中...", false, { duration: 0 });
-      try {
-        const res = await fetch("/api/v1/tokens/credits/refresh-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        if (!res.ok) {
-          let detail = "批量刷新积分失败";
-          try {
-            const body = await res.json();
-            detail = body.detail || JSON.stringify(body);
-          } catch (_) {
-            detail = await res.text();
-          }
-          showToast(`批量刷新积分失败：${detail || "unknown error"}`, true);
-          return;
-        }
-        const data = await res.json();
-        const ok = Number(data.refreshed_count || 0);
-        const fail = Number(data.failed_count || 0);
-        showToast(`批量刷新完成：成功 ${ok}，失败 ${fail}`, false);
-        await loadTokens();
-      } catch (err) {
-        showToast("批量刷新积分失败", true);
-      } finally {
-        refreshCreditsBatchBtn.disabled = false;
       }
     });
   }
@@ -1036,9 +1026,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confTokenRotationStrategy = document.getElementById("confTokenRotationStrategy");
   const confTokenSuccessAutoDisableEnabled = document.getElementById("confTokenSuccessAutoDisableEnabled");
   const confTokenSuccessAutoDisableThreshold = document.getElementById("confTokenSuccessAutoDisableThreshold");
-  const overwriteSuccessCountsBtn = document.getElementById("overwriteSuccessCountsBtn");
-  const overwriteSuccessCountsResult = document.getElementById("overwriteSuccessCountsResult");
-  const confRefreshIntervalHours = document.getElementById("confRefreshIntervalHours");
+  const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
+  const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
   const confGeneratedPruneSizeMb = document.getElementById("confGeneratedPruneSizeMb");
@@ -1070,8 +1059,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const logsNextBtn = document.getElementById("logsNextBtn");
   const logsPageInfo = document.getElementById("logsPageInfo");
   const logsFailedOnly = document.getElementById("logsFailedOnly");
-  const logsFailedAccount = document.getElementById("logsFailedAccount");
-  const clearLogFiltersBtn = document.getElementById("clearLogFiltersBtn");
   const previewModal = document.getElementById("previewModal");
   const previewContent = document.getElementById("previewContent");
   const previewCloseBtn = document.getElementById("previewCloseBtn");
@@ -1089,10 +1076,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   let logsTotalPages = 1;
   let logsRunningTotal = 0;
 
-  function getSelectedLogAccount() {
-    return String(logsFailedAccount?.value || "").trim();
-  }
-
   function isFailedOnlyFilterEnabled() {
     return Boolean(logsFailedOnly?.checked);
   }
@@ -1104,66 +1087,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (isFailedOnlyFilterEnabled()) {
       params.set("failed_only", "true");
     }
-    const account = getSelectedLogAccount();
-    if (account) {
-      params.set("account", account);
-    }
     return params;
-  }
-
-  function matchesLogAccount(item, account) {
-    const target = String(account || "").trim().toLowerCase();
-    if (!target) return true;
-    const values = [
-      item?.token_account_email,
-      item?.token_account_name,
-      item?.token_id,
-    ];
-    return values.some((value) => String(value || "").trim().toLowerCase() === target);
-  }
-
-  function buildFailedAccountOptionLabel(item) {
-    const email = String(item?.token_account_email || "").trim();
-    const name = String(item?.token_account_name || "").trim();
-    const tokenId = String(item?.token_id || "").trim();
-    const failedCount = Number(item?.failed_count || 0);
-    const primary = email || name || tokenId || "Unknown account";
-    const extra = [];
-    if (name && name !== primary) extra.push(name);
-    if (email && email !== primary) extra.push(email);
-    if (tokenId && tokenId !== primary) extra.push(`ID ${tokenId}`);
-    const suffix = failedCount > 0 ? ` (${failedCount})` : "";
-    return `${primary}${extra.length ? ` - ${extra.join(" | ")}` : ""}${suffix}`;
-  }
-
-  async function loadFailedAccounts() {
-    if (!logsFailedAccount) return;
-    const previousValue = getSelectedLogAccount();
-    try {
-      const res = await fetch("/api/v1/logs/failed-accounts?limit=200");
-      if (!res.ok) {
-        throw new Error("failed to load failed accounts");
-      }
-      const data = await res.json();
-      const items = Array.isArray(data?.items) ? data.items : [];
-      logsFailedAccount.innerHTML = '<option value="">全部账号</option>';
-      items.forEach((item) => {
-        const accountKey = String(item?.account_key || "").trim();
-        if (!accountKey) return;
-        const option = document.createElement("option");
-        option.value = accountKey;
-        option.textContent = buildFailedAccountOptionLabel(item);
-        logsFailedAccount.appendChild(option);
-      });
-      if (previousValue) {
-        const hasOption = Array.from(logsFailedAccount.options).some(
-          (option) => String(option.value || "").trim() === previousValue
-        );
-        logsFailedAccount.value = hasOption ? previousValue : "";
-      }
-    } catch (_) {
-      logsFailedAccount.innerHTML = '<option value="">全部账号</option>';
-    }
   }
 
   if (testProxyBtn) {
@@ -1232,7 +1156,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confTokenSuccessAutoDisableThreshold) {
           confTokenSuccessAutoDisableThreshold.value = Number(data.token_success_auto_disable_threshold || 2);
         }
-        confRefreshIntervalHours.value = Number(data.refresh_interval_hours || 15);
+        const refreshIntervalMinutes = Number(
+          data.refresh_interval_minutes || (Number(data.refresh_interval_hours || 0) > 0 ? Number(data.refresh_interval_hours) * 60 : 15)
+        );
+        confRefreshIntervalMinutes.value = refreshIntervalMinutes;
+        if (confJwtRefreshMarginMinutes) {
+          confJwtRefreshMarginMinutes.value = Math.max(0, Math.min(60, Number(data.jwt_refresh_margin_minutes ?? 5)));
+        }
         currentBatchConcurrency = Math.max(1, Math.min(100, Number(data.batch_concurrency || 5)));
         confBatchConcurrency.value = currentBatchConcurrency;
         confGeneratedMaxSizeMb.value = Number(data.generated_max_size_mb || 1024);
@@ -1284,7 +1214,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         token_rotation_strategy: String(confTokenRotationStrategy.value || "round_robin").trim() || "round_robin",
         token_success_auto_disable_enabled: Boolean(confTokenSuccessAutoDisableEnabled?.checked),
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
-        refresh_interval_hours: Number(confRefreshIntervalHours.value || 15),
+        refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 15),
+        jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
         generated_max_size_mb: Math.max(100, Math.min(102400, Number(confGeneratedMaxSizeMb.value || 1024))),
         generated_prune_size_mb: Math.max(10, Math.min(10240, Number(confGeneratedPruneSizeMb.value || 200))),
@@ -1301,8 +1232,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         throw new Error("管理员密码不能为空");
       }
 
-      if (!Number.isInteger(payload.refresh_interval_hours) || payload.refresh_interval_hours < 1 || payload.refresh_interval_hours > 24) {
-        throw new Error("自动刷新间隔必须是 1-24 的整数小时");
+      delete payload.refresh_interval_hours;
+
+      if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
+        throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");
+      }
+      if (!Number.isInteger(payload.jwt_refresh_margin_minutes) || payload.jwt_refresh_margin_minutes < 0 || payload.jwt_refresh_margin_minutes > 60) {
+        throw new Error("JWT 提前刷新阈值必须是 0-60 的整数分钟");
       }
       if (!Number.isInteger(payload.batch_concurrency) || payload.batch_concurrency < 1 || payload.batch_concurrency > 100) {
         throw new Error("批量导入/积分并发数必须是 1-100 的整数");
@@ -1362,57 +1298,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     saveConfigBtn.disabled = false;
   });
-
-  if (overwriteSuccessCountsBtn) {
-    overwriteSuccessCountsBtn.addEventListener("click", async () => {
-      const ok = confirm("将根据历史成功生成日志，覆盖所有 token 当前成功次数。确定继续吗？");
-      if (!ok) return;
-
-      overwriteSuccessCountsBtn.disabled = true;
-      if (overwriteSuccessCountsResult) {
-        overwriteSuccessCountsResult.textContent = "正在覆盖回填成功次数...";
-      }
-      try {
-        const res = await fetch("/api/v1/tokens/success-counts/overwrite-from-logs", {
-          method: "POST",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data?.detail || "覆盖回填成功次数失败");
-        }
-        const lines = [
-          "覆盖回填完成",
-          `扫描日志：${Number(data.scanned_logs || 0)}`,
-          `生成日志：${Number(data.generation_logs || 0)}`,
-          `成功日志：${Number(data.success_logs || 0)}`,
-          `未识别成功日志：${Number(data.unidentified_success_logs || 0)}`,
-          `匹配 Token：${Number(data.matched_tokens || 0)}`,
-          `按 ID 匹配：${Number(data.matched_by_token_id || 0)}`,
-          `按邮箱匹配：${Number(data.matched_by_email || 0)}`,
-          `按名称匹配：${Number(data.matched_by_name || 0)}`,
-          `已修改 Token：${Number(data.changed_tokens || 0)}`,
-          `重置为 0：${Number(data.reset_to_zero_tokens || 0)}`,
-          `有成功次数 Token：${Number(data.nonzero_success_tokens || 0)}`,
-          `总成功次数：${Number(data.total_success_count || 0)}`,
-          `达到阈值标记耗尽：${Number(data.exhausted_by_threshold || 0)}`,
-          `关闭自动刷新：${Number(data.disabled_auto_refresh_profiles || 0)}`,
-        ];
-        if (overwriteSuccessCountsResult) {
-          overwriteSuccessCountsResult.textContent = lines.join("\n");
-        }
-        showToast("成功次数覆盖回填完成", false, { duration: 7000 });
-        await loadTokens();
-      } catch (err) {
-        const message = err.message || "覆盖回填成功次数失败";
-        if (overwriteSuccessCountsResult) {
-          overwriteSuccessCountsResult.textContent = message;
-        }
-        showToast(message, true, { duration: 8000 });
-      } finally {
-        overwriteSuccessCountsBtn.disabled = false;
-      }
-    });
-  }
 
   function formatProxyConnectivityItem(title, item) {
     const data = item && typeof item === "object" ? item : {};
@@ -1752,6 +1637,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.success_count
         : payload?.added_count != null
           ? payload.added_count
+          : payload?.added != null
+            ? payload.added
           : 0
     );
     return Number.isFinite(value) ? value : 0;
@@ -1763,6 +1650,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.error_count
         : payload?.failed_count != null
           ? payload.failed_count
+          : payload?.failed != null
+            ? payload.failed
           : 0
     );
     return Number.isFinite(value) ? value : 0;
@@ -1774,6 +1663,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? payload.duplicate_count
         : payload?.deduplicated_count != null
           ? payload.deduplicated_count
+          : payload?.duplicates != null
+            ? payload.duplicates
           : 0
     );
     return Number.isFinite(value) ? value : 0;
@@ -2162,7 +2053,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       logsCurrentPage = Math.max(1, Number(logsData.page || logsCurrentPage || 1));
       logsTotalPages = Math.max(1, Number(logsData.total_pages || 1));
       renderLogsPagination();
-      await loadFailedAccounts();
       renderLogs(logsData.logs || [], runningItems);
 
       if (statsResult.status === "fulfilled" && statsResult.value.ok) {
@@ -2225,10 +2115,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const dt = new Date((item.ts || 0) * 1000);
     const dateText = dt.toLocaleDateString();
     const timeText = dt.toLocaleTimeString();
-    const t = Number(item.duration_sec || 0);
+    const rawDuration = Number(item.duration_sec || 0);
     const status = Number(item.status_code || 0);
     const taskStatus = forceInProgress ? "IN_PROGRESS" : String(item.task_status || "").toUpperCase();
     const previewUrl = normalizePreviewUrl(String(item.preview_url || "").trim());
+    const errorDetail = String(item.error_message || item.error_code || "").trim();
     const failedTaskStatuses = new Set(["FAILED", "ERROR", "CANCELLED"]);
     const generationOperations = new Set(["api.generate", "chat.completions", "images.generations"]);
     const generationPaths = new Set(["/api/v1/generate", "/v1/chat/completions", "/v1/images/generations"]);
@@ -2253,11 +2144,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       : (isFailed
         ? `<span class="icon-error" aria-hidden="true">!</span>`
         : `<span class="icon-check" aria-hidden="true">✓</span>`);
-    const errCode = String(item.error_code || "").trim();
-    const failedStatusText = status >= 400 ? String(status) : stateLabel;
-    const failedStateContent = errCode
-      ? `<button class="log-state log-state-btn failed" data-error-code="${escapeHtml(errCode)}" type="button">${stateIcon}<span>${escapeHtml(failedStatusText)}</span></button>`
-      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(failedStatusText)}</span></span>`;
+    const failedStatusCode = status >= 400 ? String(status) : "";
+    const failedStateContent = errorDetail
+      ? `<button class="log-state log-state-btn failed log-state-stacked" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button">${stateIcon}<span class="log-state-stack"><span>${escapeHtml(stateLabel)}</span>${failedStatusCode ? `<small>${escapeHtml(failedStatusCode)}</small>` : ""}</span></button>`
+      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(stateLabel)}</span></span>`;
     const stateContent = isFailed ? failedStateContent : `${stateIcon}<span>${stateLabel}</span>`;
     const statusCell = isFailed ? stateContent : `<span class="log-state ${stateClass}">${stateContent}</span>`;
     const taskProgressRaw = Number(item.task_progress);
@@ -2286,6 +2176,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const modelParamsText = String(item.model_params || "").trim();
     const promptText = String(item.prompt_preview || "").trim();
     const promptSummary = buildPromptSummary(promptText);
+    const durationText = formatLogDuration(rawDuration, isRunning, Number(item.ts || 0));
     const tokenCell = `<div class="log-account-cell">${accountParts.join("<br>")}</div>`;
     const previewCell = previewUrl
       ? `<button class="small preview-btn" data-url="${encodeURIComponent(previewUrl)}" data-kind="${previewKind || ""}">查看</button>`
@@ -2300,7 +2191,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     tr.innerHTML = `
       <td class="log-time-cell"><span class="date">${dateText}</span><span class="time">${timeText}</span></td>
       <td>${statusCell}</td>
-      <td style="color:#a8bfd8;">${t}</td>
+      <td style="color:#a8bfd8;">${escapeHtml(durationText)}</td>
       <td>${progressCell}</td>
       <td title="${tokenTitle}">${tokenCell}</td>
       <td title="${modelTitle || escapeHtml(modelText)}">${modelCell}</td>
@@ -2311,17 +2202,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     return tr;
   }
 
+  function formatLogDuration(seconds, isRunning = false, timestampSec = 0) {
+    let value = Number(seconds || 0);
+    if (isRunning && Number.isFinite(timestampSec) && timestampSec > 0) {
+      value = Math.max(value, (Date.now() / 1000) - timestampSec);
+    }
+    if (!Number.isFinite(value) || value <= 0) return "0";
+    if (value < 10) return value.toFixed(1).replace(/\.0$/, "");
+    return String(Math.round(value));
+  }
+
   function renderLogs(logs, runningItems = []) {
     if (logsAutoTimer) {
       clearTimeout(logsAutoTimer);
       logsAutoTimer = null;
     }
-    const selectedAccount = getSelectedLogAccount();
     const runningRows = isFailedOnlyFilterEnabled()
       ? []
-      : (Array.isArray(runningItems) ? runningItems : []).filter((item) =>
-          matchesLogAccount(item, selectedAccount)
-        );
+      : (Array.isArray(runningItems) ? runningItems : []);
     logsRunningTotal = runningRows.length;
     const allRows = [
       ...runningRows,
@@ -2402,25 +2300,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     promptDetailContent.textContent = "";
   }
 
-  async function openErrorDetailByCode(code) {
-    const errCode = String(code || "").trim();
-    if (!errCode || !errorDetailModal || !errorDetailCode || !errorDetailContent) return;
-    errorDetailCode.textContent = "错误信息";
-    errorDetailContent.innerHTML = `<pre>加载中...</pre>`;
+  function openErrorDetail(detail, statusCode = "") {
+    const message = String(detail || "").trim();
+    if (!message || !errorDetailModal || !errorDetailCode || !errorDetailContent) return;
+    const numericCode = String(statusCode || "").trim();
+    errorDetailCode.textContent = numericCode ? `错误 ${numericCode}` : "错误信息";
+    errorDetailContent.innerHTML = `<pre>${escapeHtml(message)}</pre>`;
     errorDetailModal.classList.add("open");
     errorDetailModal.setAttribute("aria-hidden", "false");
-    try {
-      const res = await fetch(`/api/v1/logs/errors/${encodeURIComponent(errCode)}`);
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `获取错误详情失败 (${res.status})`);
-      }
-      const data = await res.json();
-      const message = String(data?.message || "").trim() || "暂无错误信息";
-      errorDetailContent.innerHTML = `<pre>${escapeHtml(message)}</pre>`;
-    } catch (err) {
-      errorDetailContent.innerHTML = `<pre>${escapeHtml(err.message || "获取错误详情失败")}</pre>`;
-    }
   }
 
   function buildDownloadFilename(url, kind) {
@@ -2475,11 +2362,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         openPreview(decodeURIComponent(encodedUrl), kind);
         return;
       }
-      const clickableErrorEl = target.closest("[data-error-code]");
+      const clickableErrorEl = target.closest("[data-error-detail]");
       if (clickableErrorEl instanceof HTMLElement) {
-        const code = String(clickableErrorEl.getAttribute("data-error-code") || "").trim();
-        if (!code) return;
-        openErrorDetailByCode(code);
+        const detail = String(clickableErrorEl.getAttribute("data-error-detail") || "").trim();
+        const statusCode = String(clickableErrorEl.getAttribute("data-error-status") || "").trim();
+        if (!detail) return;
+        openErrorDetail(decodeURIComponent(detail), statusCode);
       }
     });
   }
@@ -2533,22 +2421,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (logsFailedOnly) {
     logsFailedOnly.addEventListener("change", () => {
-      logsCurrentPage = 1;
-      loadLogs();
-    });
-  }
-
-  if (logsFailedAccount) {
-    logsFailedAccount.addEventListener("change", () => {
-      logsCurrentPage = 1;
-      loadLogs();
-    });
-  }
-
-  if (clearLogFiltersBtn) {
-    clearLogFiltersBtn.addEventListener("click", () => {
-      if (logsFailedOnly) logsFailedOnly.checked = false;
-      if (logsFailedAccount) logsFailedAccount.value = "";
       logsCurrentPage = 1;
       loadLogs();
     });

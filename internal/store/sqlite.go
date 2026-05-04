@@ -24,7 +24,10 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir for db: %w", err)
 	}
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	// DELETE journal mode is slower than WAL, but it is far more predictable on
+	// Docker bind mounts and Windows-hosted volumes where WAL sidecar files can
+	// cause token imports to appear flaky.
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=DELETE&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}

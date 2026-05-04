@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leonardo Cookie Exporter</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="panel">
+    <h1>Leonardo Cookie 导出</h1>
+    <p class="desc">
+      从当前浏览器中读取 Leonardo 站点 Cookie，导出成可直接用于 Leo-Go
+      “导入 Cookie” 的标准 JSON 文件。
+    </p>
+
+    <div class="actions">
+      <button id="exportJsonBtn" class="primary">导出标准 JSON</button>
+      <button id="copyCookieBtn" class="secondary">复制 Cookie 字符串</button>
+    </div>
+
+    <label class="option">
+      <input type="checkbox" id="includeAllCookies" checked />
+      包含全部 Leonardo Cookie（推荐，兼容性更高）
+    </label>
+
+    <label class="option">
+      <input type="checkbox" id="prettyJson" checked />
+      JSON 格式化缩进
+    </label>
+
+    <div id="status" class="status">准备就绪。</div>
+
+    <details class="help">
+      <summary>导出格式预览</summary>
+      <pre>{
+  "cookie": "__Secure-better-auth.session_token=...; ..."
+}</pre>
+    </details>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -18,12 +18,14 @@ import (
 type Token struct {
 	ID                 string  `json:"id"`
 	Value              string  `json:"value"`
-	Platform           string  `json:"platform"`            // "adobe", "leonardo", etc.
-	TokenType          string  `json:"token_type"`           // "jwt", "cookie", "api_key"
-	Status             string  `json:"status"`               // "active", "invalid", "exhausted", "disabled"
+	Platform           string  `json:"platform"`   // "leonardo", etc.
+	TokenType          string  `json:"token_type"` // "session_token", "cookie", "api_key"
+	Status             string  `json:"status"`     // "active", "invalid", "exhausted", "disabled"
 	Fails              int     `json:"fails"`
 	SuccessCount       int     `json:"success_count"`
 	TotalSuccessCount  int     `json:"total_success_count"`
+	SeedanceFastCount  int     `json:"seedance_fast_success_count,omitempty"`
+	SeedanceStdCount   int     `json:"seedance_standard_success_count,omitempty"`
 	AddedAt            float64 `json:"added_at"`
 	LastUsedAt         float64 `json:"last_used_at,omitempty"`
 	ErrorUntil         float64 `json:"error_until,omitempty"`
@@ -41,10 +43,10 @@ type Token struct {
 
 // Manager manages the token pool with thread-safe operations.
 type Manager struct {
-	mu       sync.Mutex
-	tokens   []*Token
-	store    *store.SQLiteStore
-	rrIndex  int // round-robin index
+	mu      sync.Mutex
+	tokens  []*Token
+	store   *store.SQLiteStore
+	rrIndex int // round-robin index
 }
 
 // NewManager creates a new token manager.
@@ -108,12 +110,15 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 	if value == "" {
 		return nil, false, fmt.Errorf("token value is required")
 	}
+	platform = strings.ToLower(strings.TrimSpace(platform))
 	if platform == "" {
-		platform = "adobe"
+		platform = "leonardo"
 	}
+	tokenType = strings.ToLower(strings.TrimSpace(tokenType))
 	if tokenType == "" {
-		tokenType = "jwt"
+		tokenType = "session_token"
 	}
+	defaultAutoRefresh := platform == "leonardo" && strings.EqualFold(strings.TrimSpace(source), "cookie_import")
 
 	tokenID := GenerateTokenID(value)
 
@@ -137,6 +142,9 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 			if source != "" {
 				t.Source = source
 			}
+			if defaultAutoRefresh {
+				t.AutoRefresh = true
+			}
 			m.save()
 			return tokenToMap(t), true, nil
 		}
@@ -152,7 +160,8 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 		AddedAt:      now,
 		AccountName:  accountName,
 		AccountEmail: accountEmail,
-		Source:        source,
+		Source:       source,
+		AutoRefresh:  defaultAutoRefresh,
 	}
 	m.tokens = append(m.tokens, t)
 	m.save()
@@ -256,12 +265,46 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	return chosen.Value
 }
 
+// GetAvailableTokenForPlatform returns the next available token info for a specific platform.
+func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := float64(time.Now().Unix())
+	var active []*Token
+	for _, t := range m.tokens {
+		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+			active = append(active, t)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+
+	var chosen *Token
+	switch strings.ToLower(strategy) {
+	case "random":
+		chosen = active[rand.Intn(len(active))]
+	default:
+		if m.rrIndex >= len(active) {
+			m.rrIndex = 0
+		}
+		chosen = active[m.rrIndex]
+		m.rrIndex++
+		if m.rrIndex >= len(active) {
+			m.rrIndex = 0
+		}
+	}
+	chosen.LastUsedAt = now
+	return tokenToMap(chosen)
+}
+
 // ReportSuccess marks a token as successfully used.
 func (m *Manager) ReportSuccess(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -278,7 +321,7 @@ func (m *Manager) ReportSuccessWithAutoDisable(tokenValue string, autoDisableEna
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -289,6 +332,36 @@ func (m *Manager) ReportSuccessWithAutoDisable(tokenValue string, autoDisableEna
 
 	if autoDisableEnabled && threshold > 0 && t.SuccessCount >= threshold {
 		t.Status = "exhausted"
+	}
+	m.save()
+	return tokenToMap(t)
+}
+
+// ReportModelSuccessWithAutoDisable marks a successful Seedance generation and
+// disables the token when the fixed usage combination has been completed.
+func (m *Manager) ReportModelSuccessWithAutoDisable(tokenIDOrValue, modelID string, autoDisableEnabled bool) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t := m.findByIDOrValue(tokenIDOrValue)
+	if t == nil {
+		return nil
+	}
+	t.Fails = 0
+	t.SuccessCount++
+	t.TotalSuccessCount++
+	t.ErrorUntil = 0
+
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0-fast", "video-2.0-fast":
+		t.SeedanceFastCount++
+	case "seedance-2.0", "video-2.0":
+		t.SeedanceStdCount++
+	}
+
+	if autoDisableEnabled && t.seedanceSlotsExhausted() {
+		t.Status = "exhausted"
+		t.AutoRefresh = false
 	}
 	m.save()
 	return tokenToMap(t)
@@ -518,8 +591,8 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 	t := &Token{
 		ID:                 tokenID,
 		Value:              value,
-		Platform:           "adobe",
-		TokenType:          "jwt",
+		Platform:           "leonardo",
+		TokenType:          "session_token",
 		Status:             "active",
 		AddedAt:            now,
 		AccountName:        accountName,
@@ -616,6 +689,23 @@ func (m *Manager) findByValue(value string) *Token {
 	return nil
 }
 
+func (m *Manager) findByIDOrValue(value string) *Token {
+	value = strings.TrimSpace(value)
+	for _, t := range m.tokens {
+		if strings.TrimSpace(t.ID) == value || strings.TrimSpace(t.Value) == value {
+			return t
+		}
+	}
+	return nil
+}
+
+func (t *Token) seedanceSlotsExhausted() bool {
+	if t == nil {
+		return false
+	}
+	return t.SeedanceFastCount >= 2 || (t.SeedanceStdCount >= 1 && t.SeedanceFastCount >= 1)
+}
+
 // ---- serialization helpers ----
 
 func tokenToMap(t *Token) map[string]interface{} {
@@ -627,23 +717,25 @@ func tokenToMap(t *Token) map[string]interface{} {
 
 func tokenToSummary(t *Token) map[string]interface{} {
 	m := map[string]interface{}{
-		"id":                   t.ID,
-		"platform":             t.Platform,
-		"token_type":           t.TokenType,
-		"status":               t.Status,
-		"fails":                t.Fails,
-		"success_count":        t.SuccessCount,
-		"total_success_count":  t.TotalSuccessCount,
-		"added_at":             t.AddedAt,
-		"last_used_at":         t.LastUsedAt,
-		"error_until":          t.ErrorUntil,
-		"account_name":         t.AccountName,
-		"account_email":        t.AccountEmail,
-		"source":               t.Source,
-		"auto_refresh":         t.AutoRefresh,
-		"refresh_profile_id":   t.RefreshProfileID,
-		"refresh_profile_name": t.RefreshProfileName,
-		"value_preview":        maskTokenValue(t.Value),
+		"id":                              t.ID,
+		"platform":                        t.Platform,
+		"token_type":                      t.TokenType,
+		"status":                          t.Status,
+		"fails":                           t.Fails,
+		"success_count":                   t.SuccessCount,
+		"total_success_count":             t.TotalSuccessCount,
+		"seedance_fast_success_count":     t.SeedanceFastCount,
+		"seedance_standard_success_count": t.SeedanceStdCount,
+		"added_at":                        t.AddedAt,
+		"last_used_at":                    t.LastUsedAt,
+		"error_until":                     t.ErrorUntil,
+		"account_name":                    t.AccountName,
+		"account_email":                   t.AccountEmail,
+		"source":                          t.Source,
+		"auto_refresh":                    t.AutoRefresh,
+		"refresh_profile_id":              t.RefreshProfileID,
+		"refresh_profile_name":            t.RefreshProfileName,
+		"value_preview":                   maskTokenValue(t.Value),
 	}
 	// Credits info for frontend
 	if t.Credits > 0 || t.MaxCredits > 0 {
@@ -675,10 +767,10 @@ func mapToToken(m map[string]interface{}) *Token {
 	var t Token
 	json.Unmarshal(raw, &t)
 	if t.Platform == "" {
-		t.Platform = "adobe"
+		t.Platform = "leonardo"
 	}
 	if t.TokenType == "" {
-		t.TokenType = "jwt"
+		t.TokenType = "session_token"
 	}
 	return &t
 }

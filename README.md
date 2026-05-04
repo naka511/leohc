@@ -1,32 +1,55 @@
 # Leo-Go
 
-基于 Go 重写的多平台 AI 图像/视频生成 API 网关，兼容 OpenAI API 协议。
+基于 Go 的 Seedance / Leonardo 视频生成网关，提供：
 
-## 功能
+- OpenAI 兼容接口
+  - `GET /v1/models`
+  - `POST /v1/video/generations`
+- Leonardo 管理接口
+  - Token 导入、刷新、积分查询
+  - 视频生成、高级引导参数、任务状态查询
+- 管理后台
+  - Token 管理
+  - 代理与重试配置
+  - 请求日志
 
-- **OpenAI 兼容 API** — `/v1/images/generations`、`/v1/chat/completions`、`/v1/video/generations`、`/v1/models`
-- **Token 池管理** — 轮询/随机策略，自动失效、额度耗尽检测
-- **管理后台** — 玻璃拟态风格 Web UI，支持 Token CRUD、配置管理、日志查看
-- **Provider 架构** — 可扩展的平台插件系统，预留 Leonardo.ai、Stability AI 等接入
-- **单二进制部署** — 零 CGO 依赖，编译产物为单个可执行文件
+## 当前模型
+
+`/v1/models` 当前返回：
+
+- `video-2.0`
+- `video-2.0-fast`
+
+兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
+
+模型名映射规则：
+
+| 下游可传模型名 | 实际上游模型名 | 说明 |
+| --- | --- | --- |
+| `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
+| `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
+| `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
+| `seedance-2.0-fast` | `seedance-2.0-fast` | 兼容旧调用格式 |
+
+下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
+
+这两个模型当前统一按下面的口径调用：
+
+- 支持尺寸（比例）：`9:16`、`16:9`、`1:1`
+- 默认分辨率：`720p`
+- 对应 `size` 示例：`720x1280`、`1280x720`、`720x720`
+- 支持时长：`4-15` 秒
 
 ## 快速开始
 
 ### 本地运行
 
 ```bash
-# 编译
 go build -o leo-go.exe ./cmd/server/
-
-# 运行（默认端口 8787）
 ./leo-go.exe
-
-# 指定端口
-./leo-go.exe -port 8800
-
-# 指定配置文件
-./leo-go.exe -config ./my-config.json
 ```
+
+默认监听：`http://127.0.0.1:8787`
 
 ### Docker 运行
 
@@ -34,205 +57,423 @@ go build -o leo-go.exe ./cmd/server/
 docker compose up -d
 ```
 
+建议持久化以下目录：
+
+- `/app/config`
+- `/app/generated`
+
 ## 管理后台
 
-启动后访问 `http://localhost:8787/`，默认账号密码 `admin / admin`。
+启动后访问：
 
-功能包括：
-- Token 添加（单个/批量/文件上传）
-- Token 状态管理（启用/禁用/删除）
-- 系统配置（代理、重试策略、轮询策略）
-- 请求日志查看
+- `http://127.0.0.1:8787/`
 
-## API 端点与调用方式
+默认账号密码取决于 `config/config.json`，如果没有配置则回退到：
 
-### 1. OpenAI 兼容 API
+- 用户名：`admin`
+- 密码：`admin`
 
-本系统完全兼容 OpenAI 的 `/v1` 协议，可以直接将其配置为 base_url 供其他客户端使用，或使用标准的 curl 进行请求。调用时请在 HTTP Header 中传递鉴权用的 `Authorization: Bearer <API_KEY>`。
+## OpenAI 兼容调用
 
-#### 图像生成 (`/v1/images/generations`)
-用于调用图像生成模型。
+### 1. 查询模型
+
 ```bash
-curl -X POST http://localhost:8787/v1/images/generations \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "一只可爱的猫咪，赛博朋克风格",
-    "model": "adobe-firefly", 
-    "n": 1,
-    "size": "1024x1024"
-  }'
+curl http://127.0.0.1:8787/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-#### 视频生成 (`/v1/video/generations`)
-用于调用视频生成模型。
+### 2. 生成视频
 
-> **💡 模型调用说明：`seedance-2.0` / `seedance-2.0-fast`**
-> - **支持尺寸（比例）**：9:16、16:9、1:1（默认 720p，对应 `size` 参数如 `720x1280`、`1280x720`、`720x720`）
-> - **支持时长**：4-15 秒（通过 Leonardo 专属高级 API 可通过 `duration` 参数控制时长）
+统一入口：
 
 ```bash
-curl -X POST http://localhost:8787/v1/video/generations \
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "猫咪在屋顶奔跑",
-    "model": "seedance-2.0-fast",
-    "n": 1,
+    "prompt": "A cinematic drone shot over a neon city at dusk",
+    "model": "video-2.0-fast",
+    "duration": 4,
     "size": "1280x720"
   }'
 ```
 
----
+常用参数：
 
-### 2. Leonardo 专属后台 API
+- `prompt`: 提示词
+- `model`: 模型名
+- `duration`: 视频时长（秒）
+- `size`: 输出尺寸，例如 `1280x720`、`720x1280`
 
-对于需要深入控制 Leonardo 视频生成的场景，系统提供了一套高级接口（需要传入有效的 `token_id`），支持**首尾帧引导**和**多图参考引导**两种模式。
-
-#### 2.1 上传参考图 (`/api/v1/leonardo/upload-image`)
-上传用于首尾帧或参考引导的图像文件。支持 form-data 上传，需带入有效 `token_id`。
-
-```bash
-curl -X POST http://localhost:8787/api/v1/leonardo/upload-image \
-  -F "file=@/path/to/image.jpg" \
-  -F "token_id=你的Token_ID"
-```
-响应中将包含 `image_id`，用于后续生成。
-
-#### 2.2 提交视频生成任务 (`/api/v1/leonardo/generate`)
-
-##### 模式一：首尾帧引导（Start Frame / End Frame）
-指定视频的首帧和尾帧图片，生成从图A过渡到图B的视频。对应 Leonardo 的 `guidances.start_frame` / `guidances.end_frame`。
+### 2.1 文生视频
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/leonardo/generate \
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "token_id": "你的Token_ID",
-    "prompt": "从图一到图二，武侠视频",
-    "model": "seedance-2.0-fast",
-    "public": true,
+    "prompt": "A cinematic drone shot over a neon city at dusk",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720"
+  }'
+```
+
+### 2.2 单图生成视频（图生视频）
+
+最简单的写法是传 `image_url`。服务会自动把远程图片上传到 Leonardo，再作为首帧参考：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Animate this portrait with subtle camera motion",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "720x1280",
+    "image_url": "https://example.com/portrait.jpg"
+  }'
+```
+
+如果需要显式控制首帧和尾帧，也可以写成：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Animate this still into a short teaser",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720",
+    "start_frame": [
+      {
+        "url": "https://example.com/start.png"
+      }
+    ],
+    "end_frame": [
+      {
+        "url": "https://example.com/end.png"
+      }
+    ]
+  }'
+```
+
+### 2.3 多图生成视频
+
+推荐使用 `image_guidance`。每一项都可以直接传远程 `url`，服务会逐张上传并自动替换成 Leonardo 可用的参考图 ID。
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "图一的人物和图二的人物，在图三的场景里",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "720x1280",
+    "image_guidance": [
+      {
+        "url": "https://example.com/character-1.png",
+        "strength": "MID"
+      },
+      {
+        "url": "https://example.com/character-2.png",
+        "strength": "MID"
+      },
+      {
+        "url": "https://example.com/scene.png",
+        "strength": "MID"
+      }
+    ]
+  }'
+```
+
+也支持更轻量的 `image_urls` 写法：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Use multiple references to create a short fashion ad",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720",
+    "image_urls": [
+      "https://example.com/ref-1.jpg",
+      "https://example.com/ref-2.jpg",
+      "https://example.com/ref-3.jpg"
+    ]
+  }'
+```
+
+### 2.4 视频生成视频（视频参考生成视频）
+
+最简单的写法是传 `video_url`。服务会自动下载远程 mp4、上传到 Leonardo，然后作为视频参考：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "广告视频",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720",
+    "video_url": "https://example.com/source.mp4"
+  }'
+```
+
+当使用 `video_url` 或 `video_reference[].url` 时，服务会在上传远程视频后尽量自动解析源视频时长，并一并传给 Leonardo 的 `video_reference_base[].video.duration`，以更贴近 Leonardo Web 端的实际请求格式。
+
+如果你已经有 Leonardo 侧的视频参考 ID，也可以显式写 `video_reference`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "广告视频",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720",
+    "video_reference": [
+      {
+        "id": "LEONARDO_VIDEO_ID",
+        "type": "UPLOADED",
+        "duration": 4
+      }
+    ]
+  }'
+```
+
+这是显式调用格式。这里的：
+
+- 顶层 `duration` 表示生成结果的视频时长
+- `video_reference[].duration` 表示参考视频本身的时长
+- 当使用 `video_url` 或 `video_reference[].url` 时，服务会在上传远程视频后尽量自动解析源视频时长，并一并传给 Leonardo 的 `video_reference_base[].video.duration`
+- 如果你直接传的是 Leonardo 侧已有的 `video_reference[].id`，推荐同时显式补上 `video_reference[].duration`
+
+视频参考素材限制：
+- 上游要求视频参考素材的分辨率必须在 720px 到 2160px 之间，否则会返回类似 `The video resolution is not supported. Please ensure the video is between 720px and 2160px.` 的错误。
+- 这里的限制是参考视频本身的宽高，不是生成结果的 `size`。例如 416x752 这类视频会被上游拒绝；请先转码、缩放或补边到 720x1280、1280x720、1080x1920 等符合范围的尺寸后，再作为 `video_url` 或 `video_reference[].url` 使用。
+
+
+Implementation note:
+- For `video_url` and `video_reference[].url`, the service downloads the remote mp4, calls Leonardo `UploadImage(uploadType=INIT, extension=mp4)`, uploads to S3, polls `uploaded_media`, waits for `status = COMPLETE`, and then reuses that upload as the video reference for `Generate`.
+- The top-level `duration` is the generated result duration, while `video_reference[].duration` is the source reference video duration.
+- For `video_url` and `video_reference[].url`, the service also waits for `uploaded_media.status = COMPLETE` before starting generation.
+
+Validated sample:
+```json
+{
+  "prompt": "广告视频",
+  "model": "video-2.0-fast",
+  "duration": 4,
+  "size": "720x1280",
+  "video_url": "https://img688.com/file/1777636472339_0430.mp4"
+}
+```
+
+多视频参考：
+
+当你需要同时传多个视频参考时，请使用 `video_reference` 对象数组。
+不要传纯 `string[]`。
+
+请求示例：
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "video-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "url": "https://example.com/video-1.mp4"
+    },
+    {
+      "url": "https://example.com/video-2.mp4"
+    }
+  ]
+}
+```
+
+如果你已经有 Leonardo 侧已上传的视频 ID：
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "video-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "id": "LEONARDO_VIDEO_ID_1",
+      "duration": 4.041667
+    },
+    {
+      "id": "LEONARDO_VIDEO_ID_2",
+      "duration": 3.833333
+    }
+  ]
+}
+```
+
+已验证成功的多视频样例：
+
+```json
+{
+  "prompt": "广告视频",
+  "model": "video-2.0-fast",
+  "duration": 8,
+  "size": "864x496",
+  "video_reference": [
+    {
+      "url": "https://img688.com/file/1777622416553_327f3b9260c941aaa24fbc691e8aa0db.mp4"
+    },
+    {
+      "url": "https://img688.com/file/1777626569686_11d4b80b6ddb4c3f40793f68f0ae516a.mp4"
+    }
+  ]
+}
+```
+
+### 2.5 图片 + 视频混合参考生成视频
+
+如果要同时传图片参考和视频参考，推荐使用 `image_guidance + video_reference` 这一组字段。
+这是 Leonardo 上游实际使用的混合参考格式：图片会作为 `image_reference`，视频会作为 `video_reference_base`。
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "广告视频",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "1280x720",
+    "image_guidance": [
+      {
+        "url": "https://example.com/reference-image.png",
+        "strength": "MID"
+      }
+    ],
+    "video_reference": [
+      {
+        "url": "https://example.com/reference-video.mp4"
+      }
+    ]
+  }'
+```
+
+为了兼容简单调用，接口现在也支持直接传：
+
+```json
+{
+  "image_url": "https://example.com/reference-image.png",
+  "video_url": "https://example.com/reference-video.mp4"
+}
+```
+
+当请求里存在视频参考时，`image_url` 会自动按图片参考处理，而不是按单图首帧处理。
+
+### 2.6 支持的扩展字段
+
+- `image_url`
+- `start_image_url`
+- `end_image_url`
+- `image_urls`
+- `image_guidance`
+- `start_frame`
+- `end_frame`
+- `video_url`
+- `video_reference`
+
+## Leonardo 高级接口
+
+### 上传参考图
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/upload-image \
+  -F "file=@/path/to/image.jpg" \
+  -F "token_id=YOUR_TOKEN_ID"
+```
+
+### 提交生成任务
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token_id": "YOUR_TOKEN_ID",
+    "prompt": "A fashion ad style vertical video",
+    "model": "video-2.0-fast",
+    "public": false,
+    "duration": 4,
+    "width": 720,
+    "height": 1280
+  }'
+```
+
+高级接口里的图片/视频引导字段，既支持直接传 Leonardo `id`，也支持传远程 `url`。
+
+图片示例：
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token_id": "YOUR_TOKEN_ID",
+    "prompt": "Animate the uploaded poster into a vertical teaser video",
+    "model": "video-2.0-fast",
     "duration": 4,
     "width": 720,
     "height": 1280,
     "start_frame": [
-      {"id": "首帧image_id", "type": "UPLOADED"}
-    ],
-    "end_frame": [
-      {"id": "尾帧image_id", "type": "UPLOADED"}
+      {
+        "url": "https://example.com/poster.png"
+      }
     ]
   }'
 ```
 
-> **参数说明：**
-> - `start_frame`: 视频的第一帧画面（数组，通常只放一张图）
-> - `end_frame`: 视频的最后一帧画面（数组，通常只放一张图）
-> - `public`: 是否在 Leonardo 社区公开展示（默认 `true`，传 `false` 则私密）
-> - 可以只传 `start_frame` 或只传 `end_frame`，也可以同时传递
-
-##### 模式二：多图参考引导（Image Reference）
-提供参考图片影响生成风格/内容，但不锁定为具体帧。对应 Leonardo 的 `guidances.image_reference`。
+视频参考示例：
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/leonardo/generate \
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "token_id": "你的Token_ID",
-    "prompt": "风吹过麦田",
-    "model": "seedance-2.0",
-    "public": true,
-    "duration": 5,
-    "width": 1280,
-    "height": 720,
-    "image_guidance": [
-      {"id": "参考图1_id", "type": "UPLOADED", "strength": "HIGH"},
-      {"id": "参考图2_id", "type": "UPLOADED", "strength": "MID"}
-    ]
-  }'
-```
-
-> **参数说明：**
-> - `image_guidance`: 多图参考数组，每张图可设置 `strength`（`LOW` / `MID` / `HIGH`）
-> - `public`: 是否在 Leonardo 社区公开展示（默认 `true`）
-> - 两种模式可以**混合使用**（同时传 `start_frame` + `image_guidance` 等）
-
-##### 模式三：视频参考引导（Video Reference）
-上传一段视频作为参考来生成新视频。对应 Leonardo 的 `guidances.video_reference_base`。
-
-```bash
-curl -X POST http://localhost:8787/api/v1/leonardo/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token_id": "你的Token_ID",
+    "token_id": "YOUR_TOKEN_ID",
     "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
-    "public": false,
-    "duration": 4,
-    "width": 1280,
-    "height": 720,
-    "video_reference": [
-      {"id": "上传的video_id", "type": "UPLOADED", "duration": 7.918}
-    ]
-  }'
-```
-
-> **参数说明：**
-> - `video_reference`: 视频参考数组（通常只放一个视频）
-> - `id`: 通过上传接口获取的视频文件 ID
-> - `duration`: 原始视频时长（秒，浮点数）
-
-##### 混合模式：图片 + 视频同时参考
-所有引导模式可以**自由组合**。以下示例同时使用图片参考和视频参考：
-
-```bash
-curl -X POST http://localhost:8787/api/v1/leonardo/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token_id": "你的Token_ID",
-    "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
-    "public": true,
+    "model": "video-2.0-fast",
     "duration": 4,
     "width": 720,
     "height": 1280,
-    "image_guidance": [
-      {"id": "图片_id", "type": "UPLOADED", "strength": "MID"}
-    ],
     "video_reference": [
-      {"id": "视频_id", "type": "UPLOADED", "duration": 7.918}
+      {
+        "url": "https://example.com/source.mp4",
+        "duration": 4
+      }
     ]
   }'
 ```
 
-> **可组合的引导类型汇总：**
->
-> | 字段 | GraphQL 路径 | 用途 |
-> |------|-------------|------|
-> | `start_frame` | `guidances.start_frame` | 锁定视频首帧 |
-> | `end_frame` | `guidances.end_frame` | 锁定视频尾帧 |
-> | `image_guidance` | `guidances.image_reference` | 图片风格/内容引导 |
-> | `video_reference` | `guidances.video_reference_base` | 视频参考引导 |
+### 查询任务状态
 
-#### 2.3 查询任务状态 (`/api/v1/leonardo/status?id=GENERATION_ID&token_id=TOKEN_ID`)
-视频生成为异步任务，调用该接口拉取状态（PENDING / COMPLETE / FAILED），完成时会返回视频和预览图下载链接。
-
----
-
-### 3. 系统管理 API
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/v1/auth/login` | POST | 管理员登录 |
-| `/api/v1/tokens` | GET/POST | Token 列表/添加 |
-| `/api/v1/tokens/batch` | POST | 批量添加 Token |
-| `/api/v1/tokens/{id}` | DELETE | 删除 Token |
-| `/api/v1/tokens/{id}/status` | PUT | 修改 Token 状态 |
-| `/api/v1/leonardo/credits` | GET | 查询可用代币余额 |
-| `/api/v1/config` | GET/PUT | 系统配置 |
+```bash
+curl "http://127.0.0.1:8787/api/v1/leonardo/status?id=GENERATION_ID&token_id=YOUR_TOKEN_ID"
+```
 
 ## 配置
 
-编辑 `config/config.json`：
+配置文件默认路径：
+
+- `config/config.json`
+
+最小示例：
 
 ```json
 {
@@ -240,6 +481,7 @@ curl -X POST http://localhost:8787/api/v1/leonardo/generate \
   "admin_password": "admin",
   "api_key": "",
   "proxy": "",
+  "use_proxy": false,
   "generate_timeout": 300,
   "retry_enabled": true,
   "retry_max_attempts": 3,
@@ -247,45 +489,20 @@ curl -X POST http://localhost:8787/api/v1/leonardo/generate \
 }
 ```
 
-## 项目结构
+## 目录结构
 
-```
+```text
 Leo-Go/
-├── cmd/server/main.go          # 入口
+├── cmd/server/main.go
 ├── internal/
-│   ├── config/config.go        # 配置管理
+│   ├── config/
 │   ├── handler/
-│   │   ├── generation.go       # 生成 API 处理器
-│   │   └── admin.go            # 管理 API 处理器
-│   ├── provider/
-│   │   ├── provider.go         # Provider 接口
-│   │   ├── registry.go         # Provider 注册中心
-│   │   └── adobe/
-│   │       ├── client.go       # Adobe Firefly 客户端
-│   │       └── models.go       # 模型目录 & Payload 构建
+│   ├── provider/leonardo/
+│   ├── reqlog/
 │   ├── store/
-│   │   ├── sqlite.go           # SQLite 持久化
-│   │   └── job.go              # 异步 Job 存储
 │   └── token/
-│       └── manager.go          # Token 池管理器
-├── static/                     # 前端文件
-├── config/config.json          # 默认配置
+├── static/
+├── config/config.json
 ├── Dockerfile
 └── docker-compose.yml
-```
-
-## 扩展新平台
-
-实现 `provider.Provider` 接口即可接入新平台：
-
-```go
-type MyProvider struct{}
-
-func (p *MyProvider) Name() string { return "my_platform" }
-func (p *MyProvider) Generate(ctx context.Context, req ImageRequest) (*JobResult, error) { ... }
-func (p *MyProvider) SupportedModels() []ModelInfo { ... }
-// ... 实现其他接口方法
-
-// 在 main.go 中注册：
-registry.Register(&MyProvider{})
 ```

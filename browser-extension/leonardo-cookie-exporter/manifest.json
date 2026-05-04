@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Leonardo Cookie Exporter",
+  "version": "1.0.0",
+  "description": "导出 Leonardo 标准 Cookie JSON，便于导入 Leo-Go。",
+  "permissions": [
+    "cookies",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://app.leonardo.ai/*",
+    "https://api.leonardo.ai/*",
+    "https://leonardo.ai/*"
+  ],
+  "action": {
+    "default_title": "Leonardo Cookie Exporter",
+    "default_popup": "popup.html"
+  }
+}

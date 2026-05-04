@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Adobe2API 控制台</title>
+  <title>Leo-Go 控制台</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -15,8 +15,8 @@
 
   <main class="shell">
     <header class="header card" style="text-align: center; padding-bottom: 16px;">
-      <h1 style="font-size: 24px; font-weight: 800; letter-spacing: 0.05em;">Adobe2API</h1>
-      <p class="muted" style="margin-top: 4px;">Firefly 图像生成 API 中转服务</p>
+      <h1 style="font-size: 24px; font-weight: 800; letter-spacing: 0.05em;">Leo-Go</h1>
+      <p class="muted" style="margin-top: 4px;">Seedance 视频生成 API 中转服务</p>
     </header>
 
     <div class="tabs">
@@ -42,12 +42,12 @@
             <button id="exportTokensBtn" class="secondary">导出 Token</button>
             <button id="exportCookiesBtn" class="secondary">导出 Cookie</button>
             <button id="deleteTokensBatchBtn" class="danger">批量删除</button>
+            <button id="enableTokensBatchBtn" class="secondary">批量启用</button>
+            <button id="disableTokensBatchBtn" class="secondary">批量禁用</button>
             <button id="enableAutoRefreshBatchBtn" class="secondary">开启自动刷新</button>
             <button id="disableAutoRefreshBatchBtn" class="secondary">关闭自动刷新</button>
             <button id="refreshTokensBatchBtn" class="secondary">刷新 Token</button>
             <button id="checkInvalidTokensBatchBtn" class="secondary">检测失效Token</button>
-            <button id="refreshCreditsBatchBtn" class="secondary">批量刷新积分</button>
-            <button id="refreshBtn" class="secondary">刷新列表</button>
           </div>
         </div>
         <div id="tokenSummary" class="token-summary">
@@ -171,7 +171,7 @@
                 <input type="checkbox" id="confUseProxy" />
                 启用基础代理
               </label>
-              <p class="help">基础代理用于发送生成、轮询、刷新积分这类“办理业务”的请求。</p>
+              <p class="help">基础代理用于发送生成、轮询、刷新 Token 这类“办理业务”的请求。</p>
             </div>
 
             <div class="form-group">
@@ -246,35 +246,36 @@
             <div class="form-group">
               <label class="checkbox-label" style="user-select: none;">
                 <input type="checkbox" id="confTokenSuccessAutoDisableEnabled" />
-                启用 Token 成功次数自动禁用
+                启用 Token 组合耗尽自动禁用
               </label>
-              <p class="help">开启后，单个 token 成功完成任务达到设定次数，会自动标记为额度耗尽并禁用。</p>
+              <p class="help">开启后，一个 token 成功完成 1 次 video-2.0 + 1 次 video-2.0-fast，或成功完成 2 次 video-2.0-fast，会自动标记为额度耗尽、禁用并关闭自动刷新。</p>
             </div>
 
-            <div class="form-group">
+            <div class="form-group" style="display:none;">
               <label for="confTokenSuccessAutoDisableThreshold">Token 自动禁用成功次数</label>
               <input type="number" id="confTokenSuccessAutoDisableThreshold" class="input-text" min="1" max="100000" step="1" placeholder="默认 2" />
-              <p class="help">例如填 2 并开启后，一个 token 成功完成 2 次任务就会自动禁用；填 5 则成功 5 次后自动禁用。</p>
+              <p class="help">兼容旧配置，当前固定组合耗尽规则不再使用此数值。</p>
             </div>
 
-            <div class="form-group">
-              <button id="overwriteSuccessCountsBtn" type="button" class="secondary">全量覆盖回填成功次数</button>
-              <p class="help">会根据历史成功生成日志，重新统计每个 token 的成功次数，并直接覆盖当前 success_count。</p>
-              <pre id="overwriteSuccessCountsResult" class="help" style="white-space: pre-wrap; margin: 10px 0 0 0;">点击按钮后，将在这里显示覆盖回填结果。</pre>
-            </div>
           </section>
 
           <section id="cfg-storage" class="config-cat-pane">
             <div class="form-group">
-              <label for="confRefreshIntervalHours">自动刷新间隔 (小时)</label>
-              <input type="number" id="confRefreshIntervalHours" class="input-text" min="1" max="24" step="1" placeholder="默认 15" />
-              <p class="help">范围 1-24 小时。后台将严格按该间隔刷新。</p>
+              <label for="confRefreshIntervalMinutes">自动刷新间隔 (分钟)</label>
+              <input type="number" id="confRefreshIntervalMinutes" class="input-text" min="1" max="1440" step="1" placeholder="默认 15" />
+              <p class="help">范围 1-1440 分钟。后台会按设置的分钟间隔自动刷新 token。</p>
             </div>
 
             <div class="form-group">
-              <label for="confBatchConcurrency">批量导入/积分并发数</label>
+              <label for="confBatchConcurrency">批量导入并发数</label>
               <input type="number" id="confBatchConcurrency" class="input-text" min="1" max="100" step="1" placeholder="默认 5" />
-              <p class="help">用于批量导入 Cookie 时的自动刷新与积分查询，以及批量刷新积分。默认并行 5 个。</p>
+              <p class="help">用于批量导入 Cookie 时的自动刷新与账号信息查询。默认并行 5 个。</p>
+            </div>
+
+            <div class="form-group">
+              <label for="confJwtRefreshMarginMinutes">JWT 提前刷新阈值 (分钟)</label>
+              <input type="number" id="confJwtRefreshMarginMinutes" class="input-text" min="0" max="60" step="1" placeholder="默认 5" />
+              <p class="help">默认 5。剩余时间小于等于该值时，刷新 Token / 自动刷新会主动换新 JWT。填 0 表示手动刷新或自动刷新时总是强制换新；常规生成请求仍只会在 JWT 过期或缺失时换新。</p>
             </div>
 
             <div class="config-inline-row">
@@ -352,11 +353,6 @@
             <input id="logsFailedOnly" type="checkbox" />
             <span>只看失败</span>
           </label>
-          <label for="logsFailedAccount" class="help">失败账号</label>
-          <select id="logsFailedAccount" class="input-select" aria-label="失败账号筛选">
-            <option value="">全部账号</option>
-          </select>
-          <button id="clearLogFiltersBtn" class="secondary small" type="button">清空筛选</button>
         </div>
         <div class="stats-grid" id="logsStatsGrid">
           <div class="stat-card">
@@ -416,16 +412,15 @@
         <button id="tokenModalCloseBtn" class="secondary small" type="button">关闭</button>
       </div>
       <div class="add-form">
-        <div class="form-group" style="margin-bottom: 10px;">
+        <div class="form-group" style="display:none; margin-bottom: 10px;">
           <label for="tokenPlatformSelect">平台</label>
           <select id="tokenPlatformSelect" class="input-select" style="width: 200px;">
-            <option value="adobe">Adobe Firefly</option>
-            <option value="leonardo">Leonardo.ai</option>
+            <option value="leonardo">Seedance / Leonardo</option>
           </select>
-          <p class="help" id="tokenPlatformHelp">Adobe: 粘贴 JWT token。Leonardo: 粘贴完整 Cookie 字符串。</p>
+          <p class="help" id="tokenPlatformHelp">粘贴完整 Cookie 字符串。</p>
         </div>
         <textarea id="tokenInput" placeholder="支持批量添加：一行一个 Token（例如&#10;eyJhbGciOiJSUz...&#10;eyJhbGciOiJSUz...）"></textarea>
-        <p class="help" id="leonardoCookieHelp" style="display:none; color:#f0c040; margin-top:4px;">
+        <p class="help" id="leonardoCookieHelp" style="display:block; color:#f0c040; margin-top:4px;">
           💡 获取方法：浏览器 F12 → Network → 刷新页面 → 点击任意 app.leonardo.ai 请求 → 复制 Request Headers 中的 <strong>Cookie</strong> 整行值
         </p>
         <div class="form-group" style="margin-top: 10px;">
