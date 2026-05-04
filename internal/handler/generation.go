@@ -182,6 +182,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastFailure *videoGenerationAttemptFailure
 	var lastTokenID string
 	var lastSession *leonardo.TokenSession
+	var lastAttempt int
 
 	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
 		session, usedTokenID := s.getLeonardoSessionExcluding("", triedTokenIDs)
@@ -189,19 +190,19 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			if lastFailure != nil {
 				break
 			}
-			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 503, "No Leonardo tokens available")
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 503, "No Leonardo tokens available")
 			writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
 			return
 		}
 
 		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
 		if err != nil {
-			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, 400, err.Error())
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 400, err.Error())
 			writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
 			return
 		}
 
-		success, failure := s.performLeonardoVideoGeneration(session, usedTokenID, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
+		success, failure := s.performLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
 		if failure == nil {
 			writeJSON(w, 200, map[string]interface{}{
 				"created": time.Now().Unix(),
@@ -214,6 +215,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		lastFailure = failure
 		lastTokenID = usedTokenID
 		lastSession = session
+		lastAttempt = attempt
 
 		if retryPolicy.shouldRetry(failure) && attempt < retryPolicy.MaxAttempts {
 			triedTokenIDs[usedTokenID] = true
@@ -234,7 +236,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
 		}
-		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, failure.StatusCode, failure.Message)
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, failure.StatusCode, failure.Message)
 		writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
 		return
 	}
@@ -247,7 +249,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				s.TokenMgr.ReportFail(lastTokenID)
 			}
 		}
-		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, lastTokenID, lastSession, lastFailure.StatusCode, lastFailure.Message)
+		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, lastTokenID, lastSession, lastAttempt, lastFailure.StatusCode, lastFailure.Message)
 		writeJSON(w, lastFailure.StatusCode, errorResp(lastFailure.Message, lastFailure.ErrorType))
 		return
 	}
@@ -311,9 +313,12 @@ func (s *Server) resolveReqLogAccount(tokenID string, session *leonardo.TokenSes
 	return accountName, accountEmail
 }
 
-func (s *Server) logVideoRequestFailure(operation, prompt, modelID string, duration, width, height int, tokenID string, session *leonardo.TokenSession, statusCode int, errorMessage string) {
+func (s *Server) logVideoRequestFailure(operation, prompt, modelID string, duration, width, height int, tokenID string, session *leonardo.TokenSession, tokenAttempt int, statusCode int, errorMessage string) {
 	if s.ReqLog == nil {
 		return
+	}
+	if tokenAttempt <= 0 {
+		tokenAttempt = 1
 	}
 	accountName, accountEmail := s.resolveReqLogAccount(tokenID, session)
 	s.ReqLog.Add(reqlog.Entry{
@@ -322,6 +327,7 @@ func (s *Server) logVideoRequestFailure(operation, prompt, modelID string, durat
 		TaskStatus:   "FAILED",
 		Type:         "video",
 		TokenID:      tokenID,
+		TokenAttempt: tokenAttempt,
 		AccountName:  accountName,
 		AccountEmail: accountEmail,
 		Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
@@ -469,7 +475,7 @@ func isSupportedSeedanceModel(modelID string) bool {
 	}
 }
 
-func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSuccess, *videoGenerationAttemptFailure) {
+func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSuccess, *videoGenerationAttemptFailure) {
 	if s.LeonardoClient == nil {
 		return nil, &videoGenerationAttemptFailure{
 			StatusCode:      http.StatusInternalServerError,
@@ -510,12 +516,16 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 
 	if s.ReqLog != nil {
 		accountName, accountEmail := s.resolveReqLogAccount(usedTokenID, session)
+		if tokenAttempt <= 0 {
+			tokenAttempt = 1
+		}
 		s.ReqLog.Add(reqlog.Entry{
 			Timestamp:    float64(startTime.Unix()),
 			StatusCode:   200,
 			TaskStatus:   "IN_PROGRESS",
 			Type:         "video",
 			TokenID:      usedTokenID,
+			TokenAttempt: tokenAttempt,
 			AccountName:  accountName,
 			AccountEmail: accountEmail,
 			Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),

@@ -19,6 +19,7 @@ type Entry struct {
 	Type         string  `json:"type"`        // "image", "video"
 	DurationSec  float64 `json:"duration_sec"`
 	TokenID      string  `json:"token_id,omitempty"`
+	TokenAttempt int     `json:"token_attempt,omitempty"`
 	AccountName  string  `json:"token_account_name"`
 	AccountEmail string  `json:"token_account_email"`
 	Model        string  `json:"model"`
