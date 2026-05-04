@@ -243,6 +243,10 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 - 当使用 `video_url` 或 `video_reference[].url` 时，服务会在上传远程视频后尽量自动解析源视频时长，并一并传给 Leonardo 的 `video_reference_base[].video.duration`
 - 如果你直接传的是 Leonardo 侧已有的 `video_reference[].id`，推荐同时显式补上 `video_reference[].duration`
 
+视频参考素材限制：
+- 上游要求视频参考素材的分辨率必须在 720px 到 2160px 之间，否则会返回类似 `The video resolution is not supported. Please ensure the video is between 720px and 2160px.` 的错误。
+- 这里的限制是参考视频本身的宽高，不是生成结果的 `size`。例如 416x752 这类视频会被上游拒绝；请先转码、缩放或补边到 720x1280、1280x720、1080x1920 等符合范围的尺寸后，再作为 `video_url` 或 `video_reference[].url` 使用。
+
 
 Implementation note:
 - For `video_url` and `video_reference[].url`, the service downloads the remote mp4, calls Leonardo `UploadImage(uploadType=INIT, extension=mp4)`, uploads to S3, polls `uploaded_media`, waits for `status = COMPLETE`, and then reuses that upload as the video reference for `Generate`.
