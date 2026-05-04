@@ -1531,9 +1531,18 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"detail": "prompt is required"})
 		return
 	}
+	requestedModelID := strings.TrimSpace(body.Model)
+	if requestedModelID == "" {
+		requestedModelID = "video-2.0-fast"
+	}
+	modelID, ok := normalizeSeedanceModelID(requestedModelID)
+	if !ok {
+		writeJSON(w, 400, map[string]string{"detail": "unsupported model"})
+		return
+	}
 
 	// Get session from token pool
-	session, usedTokenID := s.getLeonardoSessionForModel(body.TokenID, body.Model)
+	session, usedTokenID := s.getLeonardoSessionForModel(body.TokenID, modelID)
 	if session == nil {
 		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found or no Leonardo tokens available"})
 		return
@@ -1618,7 +1627,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	genReq := &leonardo.GenerateRequest{
-		Model:  body.Model,
+		Model:  modelID,
 		Public: isPublic,
 		Params: leonardo.GenerateParams{
 			Prompt:         body.Prompt,
@@ -1652,7 +1661,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 				TokenAttempt: 1,
 				AccountName:  accountName,
 				AccountEmail: accountEmail,
-				Model:        fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
+				Model:        fmt.Sprintf("%s (%dx%d %ds)", publicVideoModelID(modelID), body.Width, body.Height, body.Duration),
 				Prompt:       body.Prompt,
 				ErrorCode:    "502",
 				ErrorMessage: fmt.Sprintf("generation failed: %v", err),
@@ -1678,7 +1687,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			TokenAttempt: 1,
 			AccountName:  accountName,
 			AccountEmail: accountEmail,
-			Model:        fmt.Sprintf("%s (%dx%d %ds)", body.Model, body.Width, body.Height, body.Duration),
+			Model:        fmt.Sprintf("%s (%dx%d %ds)", publicVideoModelID(modelID), body.Width, body.Height, body.Duration),
 			Prompt:       body.Prompt,
 			GenerationID: result.GenerationID,
 			CreditCost:   result.APICreditCost,
@@ -1687,7 +1696,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Background polling goroutine to auto-update log status
-	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID, body.Model, startTime)
+	go s.pollGenerationStatus(session, result.GenerationID, usedTokenID, modelID, startTime)
 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":            true,
@@ -2684,7 +2693,11 @@ func (s *Server) seedanceTokenCanRunModel(info map[string]interface{}, modelID s
 	if fastCount >= 2 || (standardCount >= 1 && fastCount >= 1) {
 		return false
 	}
-	switch strings.TrimSpace(modelID) {
+	canonicalModelID, ok := normalizeSeedanceModelID(modelID)
+	if !ok {
+		canonicalModelID = strings.TrimSpace(modelID)
+	}
+	switch canonicalModelID {
 	case "seedance-2.0":
 		return standardCount < 1
 	case "seedance-2.0-fast":

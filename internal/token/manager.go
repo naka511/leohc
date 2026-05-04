@@ -353,9 +353,9 @@ func (m *Manager) ReportModelSuccessWithAutoDisable(tokenIDOrValue, modelID stri
 	t.ErrorUntil = 0
 
 	switch strings.TrimSpace(modelID) {
-	case "seedance-2.0-fast":
+	case "seedance-2.0-fast", "video-2.0-fast":
 		t.SeedanceFastCount++
-	case "seedance-2.0":
+	case "seedance-2.0", "video-2.0":
 		t.SeedanceStdCount++
 	}
 

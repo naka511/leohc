@@ -319,7 +319,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     for (let i = 0; i < standard; i += 1) parts.push("S");
     for (let i = 0; i < fast; i += 1) parts.push("F");
     const text = parts.length ? parts.join("+") : "0";
-    const title = `seedance-2.0: ${standard} 次；seedance-2.0-fast: ${fast} 次；总成功: ${total} 次`;
+    const title = `video-2.0: ${standard} 次；video-2.0-fast: ${fast} 次；总成功: ${total} 次`;
     const color = total > 0 ? "#4de2c4" : "#a8bfd8";
     return `<span style="color:${color};" title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
   }

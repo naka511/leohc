@@ -17,8 +17,10 @@
 
 `/v1/models` 当前返回：
 
-- `seedance-2.0`
-- `seedance-2.0-fast`
+- `video-2.0`
+- `video-2.0-fast`
+
+兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
 
 这两个模型当前统一按下面的口径调用：
 
@@ -79,7 +81,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "A cinematic drone shot over a neon city at dusk",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720"
   }'
@@ -100,7 +102,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "A cinematic drone shot over a neon city at dusk",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720"
   }'
@@ -116,7 +118,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "Animate this portrait with subtle camera motion",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "720x1280",
     "image_url": "https://example.com/portrait.jpg"
@@ -131,7 +133,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "Animate this still into a short teaser",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720",
     "start_frame": [
@@ -157,7 +159,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "图一的人物和图二的人物，在图三的场景里",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "720x1280",
     "image_guidance": [
@@ -185,7 +187,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "Use multiple references to create a short fashion ad",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720",
     "image_urls": [
@@ -206,7 +208,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720",
     "video_url": "https://example.com/source.mp4"
@@ -223,7 +225,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720",
     "video_reference": [
@@ -257,7 +259,7 @@ Validated sample:
 ```json
 {
   "prompt": "广告视频",
-  "model": "seedance-2.0-fast",
+  "model": "video-2.0-fast",
   "duration": 4,
   "size": "720x1280",
   "video_url": "https://img688.com/file/1777636472339_0430.mp4"
@@ -274,7 +276,7 @@ Validated sample:
 ```json
 {
   "prompt": "广告视频",
-  "model": "seedance-2.0-fast",
+  "model": "video-2.0-fast",
   "duration": 8,
   "size": "864x496",
   "video_reference": [
@@ -293,7 +295,7 @@ Validated sample:
 ```json
 {
   "prompt": "广告视频",
-  "model": "seedance-2.0-fast",
+  "model": "video-2.0-fast",
   "duration": 8,
   "size": "864x496",
   "video_reference": [
@@ -314,7 +316,7 @@ Validated sample:
 ```json
 {
   "prompt": "广告视频",
-  "model": "seedance-2.0-fast",
+  "model": "video-2.0-fast",
   "duration": 8,
   "size": "864x496",
   "video_reference": [
@@ -339,7 +341,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "size": "1280x720",
     "image_guidance": [
@@ -397,7 +399,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
   -d '{
     "token_id": "YOUR_TOKEN_ID",
     "prompt": "A fashion ad style vertical video",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "public": false,
     "duration": 4,
     "width": 720,
@@ -415,7 +417,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
   -d '{
     "token_id": "YOUR_TOKEN_ID",
     "prompt": "Animate the uploaded poster into a vertical teaser video",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "width": 720,
     "height": 1280,
@@ -435,7 +437,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
   -d '{
     "token_id": "YOUR_TOKEN_ID",
     "prompt": "广告视频",
-    "model": "seedance-2.0-fast",
+    "model": "video-2.0-fast",
     "duration": 4,
     "width": 720,
     "height": 1280,

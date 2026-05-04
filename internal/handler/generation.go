@@ -17,20 +17,22 @@ import (
 
 var openAIModelCatalog = []map[string]interface{}{
 	{
-		"id":          "seedance-2.0",
+		"id":          "video-2.0",
 		"object":      "model",
-		"owned_by":    "seedance",
-		"description": "Seedance 2.0 standard video generation",
+		"owned_by":    "leonardo",
+		"description": "Video 2.0 standard video generation",
+		"aliases":     []string{"seedance-2.0"},
 		"parameters": map[string]interface{}{
 			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
 			"size":     []string{"1280x720", "720x1280", "720x720"},
 		},
 	},
 	{
-		"id":          "seedance-2.0-fast",
+		"id":          "video-2.0-fast",
 		"object":      "model",
-		"owned_by":    "seedance",
-		"description": "Seedance 2.0 fast video generation",
+		"owned_by":    "leonardo",
+		"description": "Video 2.0 fast video generation",
+		"aliases":     []string{"seedance-2.0-fast"},
 		"parameters": map[string]interface{}{
 			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
 			"size":     []string{"1280x720", "720x1280", "720x720"},
@@ -110,7 +112,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model seedance-2.0 or seedance-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -119,7 +121,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model seedance-2.0 or seedance-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -146,14 +148,16 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	modelID, _ := data["model"].(string)
-	if modelID == "" {
-		modelID = "seedance-2.0-fast"
+	requestedModelID, _ := data["model"].(string)
+	if strings.TrimSpace(requestedModelID) == "" {
+		requestedModelID = "video-2.0-fast"
 	}
-	if !isSupportedSeedanceModel(modelID) {
-		writeJSON(w, 400, errorResp("unsupported model; available models are seedance-2.0 and seedance-2.0-fast", "invalid_request_error"))
+	modelID, ok := normalizeSeedanceModelID(requestedModelID)
+	if !ok {
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0 and video-2.0-fast; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
 		return
 	}
+	responseModelID := publicVideoModelID(modelID)
 	duration := 10
 	if d, ok := data["duration"].(float64); ok {
 		duration = int(d)
@@ -206,7 +210,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		if failure == nil {
 			writeJSON(w, 200, map[string]interface{}{
 				"created": time.Now().Unix(),
-				"model":   modelID,
+				"model":   responseModelID,
 				"data":    []map[string]interface{}{{"url": success.FinalURL}},
 			})
 			return
@@ -466,12 +470,25 @@ func (s *Server) reloadRuntimeClients() {
 	s.leoSessionMu.Unlock()
 }
 
-func isSupportedSeedanceModel(modelID string) bool {
+func normalizeSeedanceModelID(modelID string) (string, bool) {
 	switch strings.TrimSpace(modelID) {
-	case "seedance-2.0", "seedance-2.0-fast":
-		return true
+	case "video-2.0", "seedance-2.0":
+		return "seedance-2.0", true
+	case "video-2.0-fast", "seedance-2.0-fast":
+		return "seedance-2.0-fast", true
 	default:
-		return false
+		return "", false
+	}
+}
+
+func publicVideoModelID(modelID string) string {
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0", "video-2.0":
+		return "video-2.0"
+	case "seedance-2.0-fast", "video-2.0-fast":
+		return "video-2.0-fast"
+	default:
+		return strings.TrimSpace(modelID)
 	}
 }
 
