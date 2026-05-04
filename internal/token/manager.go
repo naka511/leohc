@@ -116,6 +116,7 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 	if tokenType == "" {
 		tokenType = "session_token"
 	}
+	defaultAutoRefresh := platform == "leonardo" && strings.EqualFold(strings.TrimSpace(source), "cookie_import")
 
 	tokenID := GenerateTokenID(value)
 
@@ -139,6 +140,9 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 			if source != "" {
 				t.Source = source
 			}
+			if defaultAutoRefresh {
+				t.AutoRefresh = true
+			}
 			m.save()
 			return tokenToMap(t), true, nil
 		}
@@ -155,6 +159,7 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 		AccountName:  accountName,
 		AccountEmail: accountEmail,
 		Source:       source,
+		AutoRefresh:  defaultAutoRefresh,
 	}
 	m.tokens = append(m.tokens, t)
 	m.save()
