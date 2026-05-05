@@ -13,6 +13,64 @@ import (
 	"leo-go/internal/config"
 )
 
+func TestMaterializeGeneratedMediaUsesRemoteURLUploadWhenUpstreamModeEnabled(t *testing.T) {
+	cfg := config.Global()
+	original := cfg.GetAll()
+	cfg.SetAll(map[string]interface{}{})
+	t.Cleanup(func() {
+		cfg.SetAll(original)
+	})
+
+	sourceHits := 0
+	sourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceHits++
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("unexpected-fetch"))
+	}))
+	defer sourceServer.Close()
+
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		if got := r.FormValue("url"); got != sourceServer.URL+"/remote.mp4" {
+			t.Fatalf("expected remote url form field, got %q", got)
+		}
+		if got := r.FormValue("authCode"); got != "secret-123" {
+			t.Fatalf("expected authCode form field, got %q", got)
+		}
+		if _, _, err := r.FormFile("file"); err == nil {
+			t.Fatal("did not expect file payload when upstream direct mode is enabled")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"src":"https://imgbed.example/remote-mode.mp4"}}`))
+	}))
+	defer uploadServer.Close()
+
+	cfg.SetAll(map[string]interface{}{
+		"use_upstream_result_url": true,
+		"imgbed_enabled":          true,
+		"imgbed_api_url":          uploadServer.URL + "/upload?serverCompress=false",
+		"imgbed_api_key":          "secret-123",
+	})
+
+	srv := &Server{
+		Config:       cfg,
+		GeneratedDir: t.TempDir(),
+	}
+	resultURL, err := srv.materializeGeneratedMedia(sourceServer.URL+"/remote.mp4", "remote-mode", "video")
+	if err != nil {
+		t.Fatalf("materializeGeneratedMedia returned error: %v", err)
+	}
+	if resultURL != "https://imgbed.example/remote-mode.mp4" {
+		t.Fatalf("expected remote imgbed url, got %q", resultURL)
+	}
+	if sourceHits != 0 {
+		t.Fatalf("expected source media not to be fetched locally, got %d hit(s)", sourceHits)
+	}
+}
+
 func TestMaterializeGeneratedMediaUploadsToImgBed(t *testing.T) {
 	cfg := config.Global()
 	original := cfg.GetAll()
