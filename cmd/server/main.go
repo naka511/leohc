@@ -261,9 +261,40 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/static/") {
+		if !shouldSkipAccessLog(r.URL.Path) {
 			log.Printf("[http] %s %s", r.Method, r.URL.Path)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func shouldSkipAccessLog(path string) bool {
+	path = strings.TrimSpace(strings.ToLower(path))
+	if path == "" {
+		return false
+	}
+	if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
+		return true
+	}
+	if strings.HasPrefix(path, "/https:/fonts.googleapis.com") || strings.HasPrefix(path, "/https:/fonts.gstatic.com") {
+		return true
+	}
+
+	noisyPaths := []string{
+		"/console/",
+		"/server",
+		"/server-status",
+		"/about",
+		"/login.action",
+		"/___proxy_subdomain_whm/login",
+		"/___proxy_subdomain_cpanel",
+		"/v2/_catalog",
+		"/.ds_store",
+	}
+	for _, candidate := range noisyPaths {
+		if path == candidate {
+			return true
+		}
+	}
+	return false
 }
