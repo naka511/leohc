@@ -839,6 +839,13 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		if _, ok := all["admin_password"]; ok {
 			all["admin_password"] = "***"
 		}
+		stats, statsErr := s.getGeneratedStorageStats()
+		all["generated_usage_mb"] = generatedStorageUsageMB(stats.Bytes)
+		all["generated_usage_bytes"] = stats.Bytes
+		all["generated_file_count"] = stats.FileCount
+		if statsErr != nil {
+			all["generated_usage_error"] = statsErr.Error()
+		}
 		writeJSON(w, 200, all)
 		return
 	}
@@ -851,6 +858,10 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	if rawPwd, ok := updates["admin_password"].(string); ok && strings.TrimSpace(rawPwd) == "***" {
 		updates["admin_password"] = s.Config.GetString("admin_password", "admin")
 	}
+	delete(updates, "generated_usage_mb")
+	delete(updates, "generated_usage_bytes")
+	delete(updates, "generated_file_count")
+	delete(updates, "generated_usage_error")
 	for k, v := range updates {
 		s.Config.Set(k, v)
 	}
@@ -859,7 +870,15 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reloadRuntimeClients()
-	writeJSON(w, 200, map[string]interface{}{"ok": true})
+	resp := map[string]interface{}{"ok": true}
+	stats, statsErr := s.enforceGeneratedStorageLimit()
+	resp["generated_usage_mb"] = generatedStorageUsageMB(stats.Bytes)
+	resp["generated_usage_bytes"] = stats.Bytes
+	resp["generated_file_count"] = stats.FileCount
+	if statsErr != nil {
+		resp["generated_usage_error"] = statsErr.Error()
+	}
+	writeJSON(w, 200, resp)
 }
 
 // HandleProxyTest handles POST /api/v1/proxy/test using the current form values.
@@ -1103,6 +1122,76 @@ func (s *Server) HandleTokenAutoRefresh(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":           true,
 		"auto_refresh": enabled,
+	})
+}
+
+// HandleCookieExport handles POST /api/v1/refresh-profiles/export-cookies.
+func (s *Server) HandleCookieExport(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	selectedIDs := make(map[string]struct{}, len(body.IDs))
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		selectedIDs[id] = struct{}{}
+	}
+
+	tokens := s.TokenMgr.ListFull()
+	items := make([]map[string]interface{}, 0, len(tokens))
+	for _, info := range tokens {
+		tokenID := strings.TrimSpace(toString(info["id"]))
+		if len(selectedIDs) > 0 {
+			if _, ok := selectedIDs[tokenID]; !ok {
+				continue
+			}
+		}
+
+		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+		if platform != "" && platform != "leonardo" {
+			continue
+		}
+
+		cookie := strings.TrimSpace(toString(info["value"]))
+		if cookie == "" {
+			continue
+		}
+
+		name := strings.TrimSpace(toString(info["account_name"]))
+		if name == "" {
+			name = strings.TrimSpace(toString(info["account_email"]))
+		}
+		if name == "" {
+			name = strings.TrimSpace(toString(info["refresh_profile_name"]))
+		}
+		if name == "" {
+			name = tokenID
+		}
+
+		items = append(items, map[string]interface{}{
+			"id":     tokenID,
+			"name":   name,
+			"cookie": cookie,
+		})
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":    true,
+		"items": items,
+		"total": len(items),
+		"count": len(items),
 	})
 }
 

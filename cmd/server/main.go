@@ -137,7 +137,7 @@ func main() {
 
 	// ─── Refresh profiles ───
 	mux.HandleFunc("/api/v1/refresh-profiles/import-cookie-batch", srv.HandleImportCookieBatch)
-	mux.HandleFunc("/api/v1/refresh-profiles/export-cookies", srv.HandleStubPost)
+	mux.HandleFunc("/api/v1/refresh-profiles/export-cookies", srv.HandleCookieExport)
 	mux.HandleFunc("/api/v1/refresh-profiles/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {

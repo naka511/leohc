@@ -47,6 +47,7 @@ type Server struct {
 	GeneratedDir            string
 	LeonardoClient          *leonardo.Client
 	ReqLog                  *reqlog.Store
+	generatedStorageMu      sync.Mutex
 	cookieImportMu          sync.Mutex
 	cookieImportJobs        map[string]*cookieImportJob
 	leoSessionMu            sync.Mutex
