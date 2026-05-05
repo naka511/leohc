@@ -980,6 +980,10 @@ func (s *Server) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	failedOnly := r.URL.Query().Get("failed_only") == "true" || r.URL.Query().Get("failed_only") == "1"
 
+	if expired := s.expireStaleRunningLogs(); expired > 0 {
+		log.Printf("[reqlog] expired %d stale running log(s) before listing logs", expired)
+	}
+
 	entries, curPage, totalPages := s.ReqLog.List(page, pageSize, failedOnly)
 
 	// Convert to interface slice
@@ -1008,6 +1012,9 @@ func (s *Server) HandleLogsRunning(w http.ResponseWriter, r *http.Request) {
 
 	var items []interface{}
 	if s.ReqLog != nil {
+		if expired := s.expireStaleRunningLogs(); expired > 0 {
+			log.Printf("[reqlog] expired %d stale running log(s) before listing running logs", expired)
+		}
 		for _, e := range s.ReqLog.Running() {
 			items = append(items, e)
 		}
@@ -1032,6 +1039,10 @@ func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
 	rangeStr := r.URL.Query().Get("range")
 	if rangeStr == "" {
 		rangeStr = "today"
+	}
+
+	if expired := s.expireStaleRunningLogs(); expired > 0 {
+		log.Printf("[reqlog] expired %d stale running log(s) before computing log stats", expired)
 	}
 
 	if s.ReqLog == nil {

@@ -79,6 +79,22 @@ type videoGenerationSuccess struct {
 	FinalURL string
 }
 
+func (s *Server) expireStaleRunningLogs() int {
+	if s == nil || s.ReqLog == nil {
+		return 0
+	}
+
+	timeoutSec := 600
+	if s.Config != nil {
+		timeoutSec = s.Config.GetInt("generate_timeout", 600)
+	}
+	if timeoutSec < 1 {
+		timeoutSec = 600
+	}
+
+	return s.ReqLog.ExpireStaleRunning(time.Duration(timeoutSec)*time.Second, time.Now())
+}
+
 // requireAPIKey validates the X-API-Key or Authorization header.
 func (s *Server) requireAPIKey(r *http.Request) error {
 	expected := s.Config.GetString("api_key")
