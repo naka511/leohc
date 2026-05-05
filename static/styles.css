@@ -16,7 +16,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Manrope", sans-serif;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: radial-gradient(circle at 15% 20%, #163252 0%, #0c141f 45%, #070c14 100%);
   color: var(--text);
   overflow-x: hidden;
@@ -121,7 +121,7 @@ select {
   border-radius: 12px;
   background: rgba(7, 15, 25, 0.7);
   color: var(--text);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
   font-size: 13px;
   padding: 10px 12px;
 }
@@ -202,7 +202,7 @@ button:hover {
 }
 
 .mono {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
   color: #c8daf0;
   font-size: 12px;
 }
