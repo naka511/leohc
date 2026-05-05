@@ -45,14 +45,14 @@ type Token struct {
 type Manager struct {
 	mu      sync.Mutex
 	tokens  []*Token
-	store   *store.SQLiteStore
+	store   store.TokenStore
 	rrIndex int // round-robin index
 }
 
 // NewManager creates a new token manager.
-func NewManager(sqliteStore *store.SQLiteStore) *Manager {
+func NewManager(tokenStore store.TokenStore) *Manager {
 	m := &Manager{
-		store: sqliteStore,
+		store: tokenStore,
 	}
 	m.load()
 	return m

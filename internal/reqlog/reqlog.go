@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"leo-go/internal/store"
 )
 
 // Entry represents a single generation request log.
@@ -35,20 +37,39 @@ type Entry struct {
 
 // Store is a thread-safe log store with JSON file persistence.
 type Store struct {
-	mu       sync.Mutex
-	entries  []Entry
-	filePath string
+	mu        sync.Mutex
+	entries   []Entry
+	filePath  string
+	jsonStore store.JSONStore
+	jsonKey   string
 }
 
 // NewStore creates a new log store. If filePath is non-empty, loads existing
 // logs from disk and persists all changes automatically.
 func NewStore(filePath string) *Store {
+	return NewStoreWithJSON(filePath, nil, "")
+}
+
+// NewStoreWithJSON creates a new log store with optional JSON blob persistence.
+func NewStoreWithJSON(filePath string, jsonStore store.JSONStore, jsonKey string) *Store {
 	s := &Store{
-		entries:  make([]Entry, 0),
-		filePath: filePath,
+		entries:   make([]Entry, 0),
+		filePath:  filePath,
+		jsonStore: jsonStore,
+		jsonKey:   strings.TrimSpace(jsonKey),
 	}
-	if filePath != "" {
+	if jsonStore != nil && strings.TrimSpace(jsonKey) != "" {
+		s.loadFromJSONStore()
+	}
+	if len(s.entries) == 0 && filePath != "" {
 		s.loadFromDisk()
+		if len(s.entries) > 0 && s.jsonStore != nil && s.jsonKey != "" {
+			if err := s.jsonStore.SaveJSON(s.jsonKey, s.entries); err != nil {
+				log.Printf("[reqlog] failed to seed %s from %s: %v", s.jsonKey, s.filePath, err)
+			} else {
+				log.Printf("[reqlog] seeded %d log entries into %s", len(s.entries), s.jsonKey)
+			}
+		}
 	}
 	return s
 }
@@ -78,9 +99,35 @@ func (s *Store) loadFromDisk() {
 	log.Printf("[reqlog] loaded %d log entries from %s", len(entries), s.filePath)
 }
 
-// saveToDisk writes all entries to the JSON file.
-// Must be called with s.mu held.
-func (s *Store) saveToDisk() {
+func (s *Store) loadFromJSONStore() {
+	if s.jsonStore == nil || s.jsonKey == "" {
+		return
+	}
+	var entries []Entry
+	if err := s.jsonStore.LoadJSON(s.jsonKey, &entries); err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[reqlog] failed to load %s: %v", s.jsonKey, err)
+		}
+		return
+	}
+	for i := range entries {
+		entries[i].TaskStatus = normalizeTaskStatus(entries[i].TaskStatus)
+		entries[i].DurationSec = normalizeDuration(entries[i].DurationSec)
+		if entries[i].ErrorMessage == "" && entries[i].ErrorCode != "" && !isNumericErrorCode(entries[i].ErrorCode) {
+			entries[i].ErrorMessage = entries[i].ErrorCode
+		}
+	}
+	s.entries = entries
+	log.Printf("[reqlog] loaded %d log entries from %s", len(entries), s.jsonKey)
+}
+
+// save persists all entries. Must be called with s.mu held.
+func (s *Store) save() {
+	if s.jsonStore != nil && s.jsonKey != "" {
+		if err := s.jsonStore.SaveJSON(s.jsonKey, s.entries); err != nil {
+			log.Printf("[reqlog] failed to save %s: %v", s.jsonKey, err)
+		}
+	}
 	if s.filePath == "" {
 		return
 	}
@@ -111,7 +158,7 @@ func (s *Store) Add(entry Entry) {
 	// Prepend
 	s.entries = append([]Entry{entry}, s.entries...)
 
-	s.saveToDisk()
+	s.save()
 }
 
 // UpdateByGenerationID updates an entry matching the generation ID.
@@ -141,7 +188,7 @@ func (s *Store) UpdateByGenerationID(genID string, taskStatus string, statusCode
 				elapsed := time.Since(time.Unix(int64(s.entries[i].Timestamp), 0)).Seconds()
 				s.entries[i].DurationSec = normalizeDuration(elapsed)
 			}
-			s.saveToDisk()
+			s.save()
 			return true
 		}
 	}
@@ -156,7 +203,7 @@ func (s *Store) UpdateDuration(genID string, durationSec float64) {
 	for i := range s.entries {
 		if s.entries[i].GenerationID == genID {
 			s.entries[i].DurationSec = normalizeDuration(durationSec)
-			s.saveToDisk()
+			s.save()
 			return
 		}
 	}
@@ -280,7 +327,7 @@ func (s *Store) Clear() int {
 
 	n := len(s.entries)
 	s.entries = s.entries[:0]
-	s.saveToDisk()
+	s.save()
 	return n
 }
 
