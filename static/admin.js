@@ -358,18 +358,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const isStatusActive = t.status === "active";
       const isFrozen = t.status === "exhausted" || t.status === "invalid" || t.status === "abnormal";
       const displayStatus = STATUS_MAP[t.status.toLowerCase()] || t.status;
-      // Read account info: prefer account_email/account_name, fallback to refresh_profile fields
-      const tokenAccountName = String(t.account_name || t.refresh_profile_name || "").trim();
       const tokenAccountEmail = String(t.account_email || t.refresh_profile_email || "").trim();
-      const accountNameSafe = escapeHtml(tokenAccountName);
       const accountEmailSafe = escapeHtml(tokenAccountEmail);
-      const accountName = accountNameSafe || '<span style="color:#7f96ad;">手动 Token</span>';
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';
-      // Platform badge
       const platformStr = String(t.platform || "leonardo").toLowerCase();
-      const platformBadge = platformStr === "leonardo"
-        ? '<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-bottom:2px;">Leonardo</span><br>'
-        : '';
       const autoEnabled = t.auto_refresh && t.auto_refresh_enabled !== false;
       const canAutoRefresh = t.auto_refresh || platformStr === "leonardo";
       const autoRefreshCell = canAutoRefresh
@@ -398,7 +390,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       tr.innerHTML = `
         <td><input type="checkbox" class="token-select" data-id="${tokenId}" ${selectedAttr} /></td>
-        <td style="color: #a8bfd8; font-size: 12px;" title="添加时间: ${dateStr}">${platformBadge}${accountName}<br>${accountEmail}</td>
+        <td style="color: #a8bfd8; font-size: 12px;" title="添加时间: ${dateStr}">${accountEmail}</td>
         <td class="token-val">${tokenDisplay}</td>
         <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
         <td>${autoRefreshCell}</td>
