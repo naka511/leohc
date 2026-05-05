@@ -2137,9 +2137,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? `<span class="icon-error" aria-hidden="true">!</span>`
         : `<span class="icon-check" aria-hidden="true">✓</span>`);
     const failedStatusCode = status >= 400 ? String(status) : "";
+    const failedStateText = failedStatusCode || stateLabel;
     const failedStateContent = errorDetail
-      ? `<button class="log-state log-state-btn failed log-state-stacked" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button">${stateIcon}<span class="log-state-stack"><span>${escapeHtml(stateLabel)}</span>${failedStatusCode ? `<small>${escapeHtml(failedStatusCode)}</small>` : ""}</span></button>`
-      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(stateLabel)}</span></span>`;
+      ? `<button class="log-state log-state-btn failed" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button"><span>${escapeHtml(failedStateText)}</span></button>`
+      : `<span class="log-state failed"><span>${escapeHtml(failedStateText)}</span></span>`;
     const stateContent = isFailed ? failedStateContent : `${stateIcon}<span>${stateLabel}</span>`;
     const statusCell = isFailed ? stateContent : `<span class="log-state ${stateClass}">${stateContent}</span>`;
     const taskProgressRaw = Number(item.task_progress);
