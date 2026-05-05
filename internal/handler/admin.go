@@ -839,6 +839,13 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		if _, ok := all["admin_password"]; ok {
 			all["admin_password"] = "***"
 		}
+		stats, statsErr := s.getGeneratedStorageStats()
+		all["generated_usage_mb"] = generatedStorageUsageMB(stats.Bytes)
+		all["generated_usage_bytes"] = stats.Bytes
+		all["generated_file_count"] = stats.FileCount
+		if statsErr != nil {
+			all["generated_usage_error"] = statsErr.Error()
+		}
 		writeJSON(w, 200, all)
 		return
 	}
@@ -851,6 +858,10 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	if rawPwd, ok := updates["admin_password"].(string); ok && strings.TrimSpace(rawPwd) == "***" {
 		updates["admin_password"] = s.Config.GetString("admin_password", "admin")
 	}
+	delete(updates, "generated_usage_mb")
+	delete(updates, "generated_usage_bytes")
+	delete(updates, "generated_file_count")
+	delete(updates, "generated_usage_error")
 	for k, v := range updates {
 		s.Config.Set(k, v)
 	}
@@ -859,7 +870,15 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reloadRuntimeClients()
-	writeJSON(w, 200, map[string]interface{}{"ok": true})
+	resp := map[string]interface{}{"ok": true}
+	stats, statsErr := s.enforceGeneratedStorageLimit()
+	resp["generated_usage_mb"] = generatedStorageUsageMB(stats.Bytes)
+	resp["generated_usage_bytes"] = stats.Bytes
+	resp["generated_file_count"] = stats.FileCount
+	if statsErr != nil {
+		resp["generated_usage_error"] = statsErr.Error()
+	}
+	writeJSON(w, 200, resp)
 }
 
 // HandleProxyTest handles POST /api/v1/proxy/test using the current form values.

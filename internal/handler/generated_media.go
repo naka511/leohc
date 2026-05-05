@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -114,10 +115,6 @@ func (s *Server) downloadGeneratedMediaToLocal(sourceURL, generationID, mediaKin
 		}
 	}
 
-	if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
-		return "", fmt.Errorf("ensure generated dir: %w", err)
-	}
-
 	baseName := strings.TrimSpace(generationID)
 	if baseName == "" {
 		baseName = strings.TrimSuffix(pathpkg.Base(parsedURL.Path), pathpkg.Ext(parsedURL.Path))
@@ -128,8 +125,18 @@ func (s *Server) downloadGeneratedMediaToLocal(sourceURL, generationID, mediaKin
 	}
 	fileName := fmt.Sprintf("%s.%s", baseName, ext)
 	filePath := filepath.Join(s.GeneratedDir, fileName)
+
+	s.generatedStorageMu.Lock()
+	defer s.generatedStorageMu.Unlock()
+
+	if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
+		return "", fmt.Errorf("ensure generated dir: %w", err)
+	}
 	if err := os.WriteFile(filePath, data, 0o644); err != nil {
 		return "", fmt.Errorf("save generated media: %w", err)
+	}
+	if _, pruneErr := s.enforceGeneratedStorageLimitLocked(); pruneErr != nil {
+		log.Printf("[generated] failed to prune generated storage after saving %s: %v", fileName, pruneErr)
 	}
 
 	return s.buildGeneratedPublicURL(fileName), nil
