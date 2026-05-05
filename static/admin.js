@@ -390,7 +390,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       tr.innerHTML = `
         <td><input type="checkbox" class="token-select" data-id="${tokenId}" ${selectedAttr} /></td>
-        <td style="color: #a8bfd8; font-size: 12px;" title="添加时间: ${dateStr}">${accountEmail}</td>
+        <td class="token-account-cell" title="添加时间: ${dateStr}">${accountEmail}</td>
         <td class="token-val">${tokenDisplay}</td>
         <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
         <td>${autoRefreshCell}</td>
@@ -2164,8 +2164,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? `<span class="log-account-email">${escapeHtml(tokenEmail)}</span>`
         : `<span class="log-account-email">-</span>`
     );
-    const modelText = String(item.model || "-");
-    const modelParamsText = String(item.model_params || "").trim();
+    let modelText = String(item.model || "-").trim();
+    let modelParamsText = String(item.model_params || "").trim();
+    if (!modelParamsText) {
+      const inlineParamsMatch = modelText.match(/^(.*)\s+\(([^()]+)\)$/);
+      if (inlineParamsMatch) {
+        modelText = String(inlineParamsMatch[1] || "-").trim() || "-";
+        modelParamsText = String(inlineParamsMatch[2] || "").trim();
+      }
+    }
     const promptText = String(item.prompt_preview || "").trim();
     const promptSummary = buildPromptSummary(promptText);
     const durationText = formatLogDuration(rawDuration, isRunning, Number(item.ts || 0));

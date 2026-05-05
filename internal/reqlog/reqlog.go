@@ -25,6 +25,7 @@ type Entry struct {
 	AccountName  string  `json:"token_account_name"`
 	AccountEmail string  `json:"token_account_email"`
 	Model        string  `json:"model"`
+	ModelParams  string  `json:"model_params,omitempty"`
 	Prompt       string  `json:"prompt_preview"`
 	ErrorCode    string  `json:"error_code,omitempty"`
 	ErrorMessage string  `json:"error_message,omitempty"`
