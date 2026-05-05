@@ -798,6 +798,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       refreshTokensBatchBtn.disabled = true;
       try {
+        showToast(`批量刷新 Token 中，共 ${selectedIds.length} 个...`, false, { duration: 0 });
         const res = await fetch("/api/v1/tokens/refresh-batch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -815,7 +816,25 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
         const data = await res.json();
-        await loadTokens();
+        const jobId = String(data?.background_refresh?.job_id || "").trim();
+        if (!jobId) {
+          throw new Error("批量刷新 Token 任务创建失败");
+        }
+        await trackBackgroundJob({
+          title: "批量刷新 Token 进度",
+          initialPayload: data,
+          pollUrl: `/api/v1/tokens/refresh-jobs/${encodeURIComponent(jobId)}`,
+          silent: true,
+          onComplete: async (payload) => {
+            await loadTokens();
+            const okDone = Number(payload?.refreshed_count || payload?.success_count || 0);
+            const skippedDone = Number(payload?.skipped_count || 0);
+            const missingDone = Number(payload?.missing_count || 0);
+            const failDone = Number(payload?.failed_count || 0);
+            showToast(`批量刷新 Token 完成：成功 ${okDone}，跳过 ${skippedDone}，缺失 ${missingDone}，失败 ${failDone}`, failDone > 0, { duration: 7000 });
+          },
+        });
+        return;
         const ok = Number(data.refreshed_count || data.success_count || 0);
         const skipped = Number(data.skipped_count || 0);
         const fail = Number(data.failed_count || 0);
@@ -1832,10 +1851,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     initialPayload,
     pollUrl,
     onComplete,
+    silent = false,
   }) {
     stopActiveTaskTracker();
     let payload = initialPayload || {};
-    renderTaskReport(title, payload);
+    if (!silent) {
+      renderTaskReport(title, payload);
+    }
 
     const run = async () => {
       try {
@@ -1845,7 +1867,9 @@ document.addEventListener("DOMContentLoaded", async () => {
           throw new Error(data?.detail || "任务状态查询失败");
         }
         payload = data || {};
-        renderTaskReport(title, payload);
+        if (!silent) {
+          renderTaskReport(title, payload);
+        }
         if (payload?.background_refresh?.completed) {
           stopActiveTaskTracker();
           if (typeof onComplete === "function") {
@@ -1859,6 +1883,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         };
       } catch (err) {
         stopActiveTaskTracker();
+        if (silent) {
+          showToast(err.message || "任务状态查询失败", true, { duration: 7000 });
+          return;
+        }
         renderTaskReport(title, {
           status: "failed",
           total: Number(payload?.total || 0),

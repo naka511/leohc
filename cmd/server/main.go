@@ -133,7 +133,11 @@ func main() {
 		case strings.HasSuffix(path, "/auto-refresh") && r.Method == "PUT":
 			srv.HandleTokenAutoRefresh(w, r)
 		case strings.Contains(path, "/refresh-jobs/"):
-			srv.HandleStubPost(w, r)
+			if r.Method == "GET" {
+				srv.HandleTokenRefreshJob(w, r)
+				return
+			}
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		case r.Method == "DELETE":
 			srv.HandleTokenDelete(w, r)
 		default:

@@ -50,6 +50,8 @@ type Server struct {
 	generatedStorageMu      sync.Mutex
 	cookieImportMu          sync.Mutex
 	cookieImportJobs        map[string]*cookieImportJob
+	tokenRefreshJobMu       sync.Mutex
+	tokenRefreshJobs        map[string]*tokenRefreshBatchJob
 	leoSessionMu            sync.Mutex
 	leoSessions             map[string]*leonardo.TokenSession
 	autoRefreshMu           sync.Mutex
