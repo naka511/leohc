@@ -49,8 +49,27 @@ func main() {
 	}
 	defer sqlStore.Close()
 
+	var redisStore *store.RedisStore
+	if candidate, redisErr := store.NewRedisStoreFromEnv(); redisErr != nil {
+		log.Printf("[redis] disabled: %v", redisErr)
+	} else if candidate != nil {
+		if pingErr := candidate.Ping(); pingErr != nil {
+			log.Printf("[redis] unavailable, fallback to local storage: %v", pingErr)
+		} else {
+			redisStore = candidate
+			log.Printf("[redis] connected: addr=%s db=%d prefix=%s", redisStore.Address(), redisStore.DB(), redisStore.KeyPrefix())
+			if seedErr := seedRedisTokens(redisStore, sqlStore); seedErr != nil {
+				log.Printf("[redis] failed to seed tokens from sqlite: %v", seedErr)
+			}
+		}
+	}
+
 	// Token manager
-	tokenMgr := token.NewManager(sqlStore)
+	var tokenStore store.TokenStore = sqlStore
+	if redisStore != nil {
+		tokenStore = redisStore
+	}
+	tokenMgr := token.NewManager(tokenStore)
 	log.Printf("[token] pool ready: %d tokens loaded", tokenMgr.Count())
 
 	// Leonardo client
@@ -64,6 +83,9 @@ func main() {
 
 	reqLogFile := filepath.Join(configDir, "request_logs.json")
 	reqLogStore := reqlog.NewStore(reqLogFile)
+	if redisStore != nil {
+		reqLogStore = reqlog.NewStoreWithJSON(reqLogFile, redisStore, "request_logs")
+	}
 
 	srv := &handler.Server{
 		TokenMgr:       tokenMgr,
@@ -196,6 +218,31 @@ func main() {
 	if err := http.ListenAndServe(addr, h); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func seedRedisTokens(redisStore *store.RedisStore, sqliteStore *store.SQLiteStore) error {
+	if redisStore == nil || sqliteStore == nil {
+		return nil
+	}
+	redisTokens, err := redisStore.LoadTokens()
+	if err != nil {
+		return err
+	}
+	if len(redisTokens) > 0 {
+		return nil
+	}
+	sqliteTokens, err := sqliteStore.LoadTokens()
+	if err != nil {
+		return err
+	}
+	if len(sqliteTokens) == 0 {
+		return nil
+	}
+	if err := redisStore.ReplaceTokens(sqliteTokens); err != nil {
+		return err
+	}
+	log.Printf("[redis] seeded %d tokens from sqlite", len(sqliteTokens))
+	return nil
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
