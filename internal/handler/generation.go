@@ -843,6 +843,17 @@ func toFloat64(v interface{}) float64 {
 	}
 }
 
+func isExpiredTokenInfo(info map[string]interface{}) bool {
+	if info == nil {
+		return false
+	}
+	expiresAt := toFloat64(info["expires_at"])
+	if expiresAt <= 0 {
+		return false
+	}
+	return float64(time.Now().Unix()) >= expiresAt
+}
+
 func statusCodeFromGenerationError(err error) int {
 	if err == nil {
 		return http.StatusBadGateway

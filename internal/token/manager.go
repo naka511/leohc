@@ -208,7 +208,7 @@ func (m *Manager) GetAvailable(strategy string) string {
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -242,7 +242,7 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -273,7 +273,7 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -297,6 +297,10 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	}
 	chosen.LastUsedAt = now
 	return tokenToMap(chosen)
+}
+
+func isTokenExpiredAt(t *Token, now float64) bool {
+	return t != nil && t.ExpiresAt > 0 && now >= t.ExpiresAt
 }
 
 // ReportSuccess marks a token as successfully used.
@@ -479,7 +483,9 @@ func (m *Manager) Stats() map[string]interface{} {
 	for _, t := range m.tokens {
 		switch t.Status {
 		case "active":
-			if t.ErrorUntil == 0 || now >= t.ErrorUntil {
+			if isTokenExpiredAt(t, now) {
+				invalid++
+			} else if t.ErrorUntil == 0 || now >= t.ErrorUntil {
 				active++
 			}
 		case "invalid":
@@ -716,11 +722,18 @@ func tokenToMap(t *Token) map[string]interface{} {
 }
 
 func tokenToSummary(t *Token) map[string]interface{} {
+	now := float64(time.Now().Unix())
+	expired := isTokenExpiredAt(t, now)
+	displayStatus := t.Status
+	if expired && displayStatus == "active" {
+		displayStatus = "invalid"
+	}
+
 	m := map[string]interface{}{
 		"id":                              t.ID,
 		"platform":                        t.Platform,
 		"token_type":                      t.TokenType,
-		"status":                          t.Status,
+		"status":                          displayStatus,
 		"fails":                           t.Fails,
 		"success_count":                   t.SuccessCount,
 		"total_success_count":             t.TotalSuccessCount,
@@ -744,11 +757,10 @@ func tokenToSummary(t *Token) map[string]interface{} {
 	}
 	// Expiry info for frontend
 	if t.ExpiresAt > 0 {
-		now := float64(time.Now().Unix())
 		remaining := t.ExpiresAt - now
 		m["expires_at"] = t.ExpiresAt
 		m["remaining_seconds"] = int(remaining)
-		m["is_expired"] = remaining <= 0
+		m["is_expired"] = expired
 		expTime := time.Unix(int64(t.ExpiresAt), 0)
 		m["expires_at_text"] = expTime.Format("2006-01-02 15:04")
 	}
