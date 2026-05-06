@@ -25,6 +25,7 @@ type Entry struct {
 	AccountName  string  `json:"token_account_name"`
 	AccountEmail string  `json:"token_account_email"`
 	Model        string  `json:"model"`
+	ModelParams  string  `json:"model_params,omitempty"`
 	Prompt       string  `json:"prompt_preview"`
 	ErrorCode    string  `json:"error_code,omitempty"`
 	ErrorMessage string  `json:"error_message,omitempty"`
@@ -267,6 +268,47 @@ func (s *Store) Running() []Entry {
 	return result
 }
 
+// ExpireStaleRunning marks long-running IN_PROGRESS entries as FAILED/504.
+func (s *Store) ExpireStaleRunning(timeout time.Duration, now time.Time) int {
+	if timeout <= 0 {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := 0
+	for i := range s.entries {
+		if normalizeTaskStatus(s.entries[i].TaskStatus) != "IN_PROGRESS" {
+			continue
+		}
+		if s.entries[i].Timestamp <= 0 {
+			continue
+		}
+
+		startedAt := time.Unix(int64(s.entries[i].Timestamp), 0)
+		elapsed := now.Sub(startedAt)
+		if elapsed < timeout {
+			continue
+		}
+
+		s.entries[i].TaskStatus = "FAILED"
+		s.entries[i].StatusCode = httpStatusGatewayTimeout
+		s.entries[i].ErrorCode = strconv.Itoa(httpStatusGatewayTimeout)
+		s.entries[i].ErrorMessage = "Generation polling timed out"
+		s.entries[i].DurationSec = normalizeDuration(elapsed.Seconds())
+		updated++
+	}
+
+	if updated > 0 {
+		s.save()
+	}
+	return updated
+}
+
 // Stats computes statistics for log entries within a time range.
 func (s *Store) Stats(rangeStr string) map[string]interface{} {
 	s.mu.Lock()
@@ -360,3 +402,5 @@ func isNumericErrorCode(value string) bool {
 	_, err := strconv.Atoi(value)
 	return err == nil
 }
+
+const httpStatusGatewayTimeout = 504

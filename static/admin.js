@@ -358,18 +358,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const isStatusActive = t.status === "active";
       const isFrozen = t.status === "exhausted" || t.status === "invalid" || t.status === "abnormal";
       const displayStatus = STATUS_MAP[t.status.toLowerCase()] || t.status;
-      // Read account info: prefer account_email/account_name, fallback to refresh_profile fields
-      const tokenAccountName = String(t.account_name || t.refresh_profile_name || "").trim();
       const tokenAccountEmail = String(t.account_email || t.refresh_profile_email || "").trim();
-      const accountNameSafe = escapeHtml(tokenAccountName);
       const accountEmailSafe = escapeHtml(tokenAccountEmail);
-      const accountName = accountNameSafe || '<span style="color:#7f96ad;">手动 Token</span>';
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';
-      // Platform badge
       const platformStr = String(t.platform || "leonardo").toLowerCase();
-      const platformBadge = platformStr === "leonardo"
-        ? '<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px;margin-bottom:2px;">Leonardo</span><br>'
-        : '';
       const autoEnabled = t.auto_refresh && t.auto_refresh_enabled !== false;
       const canAutoRefresh = t.auto_refresh || platformStr === "leonardo";
       const autoRefreshCell = canAutoRefresh
@@ -398,7 +390,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       tr.innerHTML = `
         <td><input type="checkbox" class="token-select" data-id="${tokenId}" ${selectedAttr} /></td>
-        <td style="color: #a8bfd8; font-size: 12px;" title="添加时间: ${dateStr}">${platformBadge}${accountName}<br>${accountEmail}</td>
+        <td class="token-account-cell" title="添加时间: ${dateStr}">${accountEmail}</td>
         <td class="token-val">${tokenDisplay}</td>
         <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
         <td>${autoRefreshCell}</td>
@@ -806,6 +798,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       refreshTokensBatchBtn.disabled = true;
       try {
+        showToast(`批量刷新 Token 中，共 ${selectedIds.length} 个...`, false, { duration: 0 });
         const res = await fetch("/api/v1/tokens/refresh-batch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -823,7 +816,25 @@ document.addEventListener("DOMContentLoaded", async () => {
           return;
         }
         const data = await res.json();
-        await loadTokens();
+        const jobId = String(data?.background_refresh?.job_id || "").trim();
+        if (!jobId) {
+          throw new Error("批量刷新 Token 任务创建失败");
+        }
+        await trackBackgroundJob({
+          title: "批量刷新 Token 进度",
+          initialPayload: data,
+          pollUrl: `/api/v1/tokens/refresh-jobs/${encodeURIComponent(jobId)}`,
+          silent: true,
+          onComplete: async (payload) => {
+            await loadTokens();
+            const okDone = Number(payload?.refreshed_count || payload?.success_count || 0);
+            const skippedDone = Number(payload?.skipped_count || 0);
+            const missingDone = Number(payload?.missing_count || 0);
+            const failDone = Number(payload?.failed_count || 0);
+            showToast(`批量刷新 Token 完成：成功 ${okDone}，跳过 ${skippedDone}，缺失 ${missingDone}，失败 ${failDone}`, failDone > 0, { duration: 7000 });
+          },
+        });
+        return;
         const ok = Number(data.refreshed_count || data.success_count || 0);
         const skipped = Number(data.skipped_count || 0);
         const fail = Number(data.failed_count || 0);
@@ -1840,10 +1851,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     initialPayload,
     pollUrl,
     onComplete,
+    silent = false,
   }) {
     stopActiveTaskTracker();
     let payload = initialPayload || {};
-    renderTaskReport(title, payload);
+    if (!silent) {
+      renderTaskReport(title, payload);
+    }
 
     const run = async () => {
       try {
@@ -1853,7 +1867,9 @@ document.addEventListener("DOMContentLoaded", async () => {
           throw new Error(data?.detail || "任务状态查询失败");
         }
         payload = data || {};
-        renderTaskReport(title, payload);
+        if (!silent) {
+          renderTaskReport(title, payload);
+        }
         if (payload?.background_refresh?.completed) {
           stopActiveTaskTracker();
           if (typeof onComplete === "function") {
@@ -1867,6 +1883,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         };
       } catch (err) {
         stopActiveTaskTracker();
+        if (silent) {
+          showToast(err.message || "任务状态查询失败", true, { duration: 7000 });
+          return;
+        }
         renderTaskReport(title, {
           status: "failed",
           total: Number(payload?.total || 0),
@@ -2145,9 +2165,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? `<span class="icon-error" aria-hidden="true">!</span>`
         : `<span class="icon-check" aria-hidden="true">✓</span>`);
     const failedStatusCode = status >= 400 ? String(status) : "";
+    const failedStateText = failedStatusCode || stateLabel;
     const failedStateContent = errorDetail
-      ? `<button class="log-state log-state-btn failed log-state-stacked" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button">${stateIcon}<span class="log-state-stack"><span>${escapeHtml(stateLabel)}</span>${failedStatusCode ? `<small>${escapeHtml(failedStatusCode)}</small>` : ""}</span></button>`
-      : `<span class="log-state failed"><span class="icon-error" aria-hidden="true">!</span><span>${escapeHtml(stateLabel)}</span></span>`;
+      ? `<button class="log-state log-state-btn failed" data-error-detail="${encodeURIComponent(errorDetail)}" data-error-status="${escapeHtml(failedStatusCode)}" type="button"><span>${escapeHtml(failedStateText)}</span></button>`
+      : `<span class="log-state failed"><span>${escapeHtml(failedStateText)}</span></span>`;
     const stateContent = isFailed ? failedStateContent : `${stateIcon}<span>${stateLabel}</span>`;
     const statusCell = isFailed ? stateContent : `<span class="log-state ${stateClass}">${stateContent}</span>`;
     const taskProgressRaw = Number(item.task_progress);
@@ -2172,8 +2193,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? `<span class="log-account-email">${escapeHtml(tokenEmail)}</span>`
         : `<span class="log-account-email">-</span>`
     );
-    const modelText = String(item.model || "-");
-    const modelParamsText = String(item.model_params || "").trim();
+    let modelText = String(item.model || "-").trim();
+    let modelParamsText = String(item.model_params || "").trim();
+    if (!modelParamsText) {
+      const inlineParamsMatch = modelText.match(/^(.*)\s+\(([^()]+)\)$/);
+      if (inlineParamsMatch) {
+        modelText = String(inlineParamsMatch[1] || "-").trim() || "-";
+        modelParamsText = String(inlineParamsMatch[2] || "").trim();
+      }
+    }
     const promptText = String(item.prompt_preview || "").trim();
     const promptSummary = buildPromptSummary(promptText);
     const durationText = formatLogDuration(rawDuration, isRunning, Number(item.ts || 0));

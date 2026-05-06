@@ -712,6 +712,13 @@ table {
   vertical-align: top;
 }
 
+.token-account-cell {
+  color: #a8bfd8;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
 .log-account-cell {
   display: block;
   color: #a8bfd8;

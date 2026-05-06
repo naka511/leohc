@@ -44,6 +44,14 @@ func (s *Server) materializeGeneratedMedia(sourceURL, generationID, mediaKind st
 	}
 	imgBedReady := imgBedEnabled && imgBedAPIURL != "" && imgBedAPIKey != ""
 
+	if imgBedReady && useUpstream {
+		uploadedURL, uploadErr := s.uploadGeneratedMediaURLToImgBed(sourceURL, imgBedAPIURL, imgBedAPIKey)
+		if uploadErr == nil {
+			return uploadedURL, nil
+		}
+		log.Printf("[generated] image bed remote url upload failed for %s: %v", sourceURL, uploadErr)
+	}
+
 	if !imgBedReady && useUpstream {
 		return sourceURL, nil
 	}
@@ -268,6 +276,74 @@ func (s *Server) uploadGeneratedMediaToImgBed(payload *generatedMediaPayload, ap
 	uploadedURL, err := extractImgBedResponseURL(respBody)
 	if err != nil {
 		return "", fmt.Errorf("parse image bed response failed: %w", err)
+	}
+	return uploadedURL, nil
+}
+
+func (s *Server) uploadGeneratedMediaURLToImgBed(sourceURL, apiURL, apiKey string) (string, error) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return "", fmt.Errorf("generated media source url is required")
+	}
+	if strings.TrimSpace(apiURL) == "" {
+		return "", fmt.Errorf("image bed api url is required")
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return "", fmt.Errorf("image bed api key is required")
+	}
+
+	parsedSourceURL, err := url.Parse(sourceURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid generated media source url: %w", err)
+	}
+	if parsedSourceURL.Scheme != "http" && parsedSourceURL.Scheme != "https" {
+		return "", fmt.Errorf("generated media source url must use http or https")
+	}
+
+	uploadURL, err := buildImgBedUploadURL(apiURL, apiKey)
+	if err != nil {
+		return "", err
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("authCode", apiKey)
+	_ = writer.WriteField("returnFormat", "full")
+	_ = writer.WriteField("url", sourceURL)
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("finalize image bed remote upload body: %w", err)
+	}
+
+	httpClient, err := s.newResourceHTTPClient(generatedMediaFetchTimeout)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", uploadURL, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "leo-go-imgbed-upload/1.0")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload remote url to image bed failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", fmt.Errorf("read image bed remote upload response failed: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("image bed remote upload returned %d: %s", resp.StatusCode, summarizeResponseBody(respBody))
+	}
+
+	uploadedURL, err := extractImgBedResponseURL(respBody)
+	if err != nil {
+		return "", fmt.Errorf("parse image bed remote upload response failed: %w", err)
 	}
 	return uploadedURL, nil
 }

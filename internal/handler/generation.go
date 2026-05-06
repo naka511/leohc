@@ -50,6 +50,8 @@ type Server struct {
 	generatedStorageMu      sync.Mutex
 	cookieImportMu          sync.Mutex
 	cookieImportJobs        map[string]*cookieImportJob
+	tokenRefreshJobMu       sync.Mutex
+	tokenRefreshJobs        map[string]*tokenRefreshBatchJob
 	leoSessionMu            sync.Mutex
 	leoSessions             map[string]*leonardo.TokenSession
 	autoRefreshMu           sync.Mutex
@@ -77,6 +79,22 @@ type videoGenerationAttemptFailure struct {
 
 type videoGenerationSuccess struct {
 	FinalURL string
+}
+
+func (s *Server) expireStaleRunningLogs() int {
+	if s == nil || s.ReqLog == nil {
+		return 0
+	}
+
+	timeoutSec := 600
+	if s.Config != nil {
+		timeoutSec = s.Config.GetInt("generate_timeout", 600)
+	}
+	if timeoutSec < 1 {
+		timeoutSec = 600
+	}
+
+	return s.ReqLog.ExpireStaleRunning(time.Duration(timeoutSec)*time.Second, time.Now())
 }
 
 // requireAPIKey validates the X-API-Key or Authorization header.
@@ -547,7 +565,8 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 			TokenAttempt: tokenAttempt,
 			AccountName:  accountName,
 			AccountEmail: accountEmail,
-			Model:        fmt.Sprintf("%s (%dx%d %ds)", modelID, width, height, duration),
+			Model:        modelID,
+			ModelParams:  fmt.Sprintf("%dx%d %ds", width, height, duration),
 			Prompt:       prompt,
 			GenerationID: result.GenerationID,
 			CreditCost:   result.APICreditCost,

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"leo-go/internal/config"
 	"leo-go/internal/handler"
@@ -86,6 +87,9 @@ func main() {
 	if redisStore != nil {
 		reqLogStore = reqlog.NewStoreWithJSON(reqLogFile, redisStore, "request_logs")
 	}
+	if expired := reqLogStore.ExpireStaleRunning(time.Duration(cfg.GetInt("generate_timeout", 600))*time.Second, time.Now()); expired > 0 {
+		log.Printf("[reqlog] expired %d stale running log(s) during startup", expired)
+	}
 
 	srv := &handler.Server{
 		TokenMgr:       tokenMgr,
@@ -129,7 +133,11 @@ func main() {
 		case strings.HasSuffix(path, "/auto-refresh") && r.Method == "PUT":
 			srv.HandleTokenAutoRefresh(w, r)
 		case strings.Contains(path, "/refresh-jobs/"):
-			srv.HandleStubPost(w, r)
+			if r.Method == "GET" {
+				srv.HandleTokenRefreshJob(w, r)
+				return
+			}
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		case r.Method == "DELETE":
 			srv.HandleTokenDelete(w, r)
 		default:

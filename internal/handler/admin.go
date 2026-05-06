@@ -676,56 +676,50 @@ func (s *Server) HandleTokenRefreshBatch(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	refreshed, skipped, missing, failed := 0, 0, 0, 0
-	items := make([]map[string]interface{}, 0, len(body.IDs))
+	ids := make([]string, 0, len(body.IDs))
+	seen := make(map[string]struct{}, len(body.IDs))
 	for _, id := range body.IDs {
 		id = strings.TrimSpace(id)
-		item := map[string]interface{}{"id": id}
-		info := s.TokenMgr.GetByID(id)
-		if info == nil {
-			missing++
-			item["status"] = "missing"
-			items = append(items, item)
+		if id == "" {
 			continue
 		}
-		platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
-		tokenValue := strings.TrimSpace(toString(info["value"]))
-		if platform != "leonardo" || tokenValue == "" || s.LeonardoClient == nil {
-			skipped++
-			item["status"] = "skipped"
-			items = append(items, item)
+		if _, ok := seen[id]; ok {
 			continue
 		}
-		session, credits, err := s.validateLeonardoToken(id, tokenValue)
-		if err != nil {
-			failed++
-			item["status"] = "failed"
-			item["error"] = err.Error()
-			items = append(items, item)
-			continue
-		}
-		s.TokenMgr.SetStatus(id, "active")
-		if credits != nil {
-			s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
-			item["credits"] = credits.TotalTokens
-		}
-		s.TokenMgr.UpdateExpiry(id, float64(session.JWTExpiry.Unix()))
-		s.TokenMgr.UpdateAccountInfo(id, session.HasuraUserID, session.Email)
-		refreshed++
-		item["status"] = "success"
-		item["email"] = session.Email
-		item["jwt_remaining"] = session.GetJWTRemainingSeconds()
-		items = append(items, item)
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
-	writeJSON(w, 200, map[string]interface{}{
-		"ok":              true,
-		"refreshed_count": refreshed,
-		"success_count":   refreshed,
-		"skipped_count":   skipped,
-		"missing_count":   missing,
-		"failed_count":    failed,
-		"items":           items,
-	})
+	if len(ids) == 0 {
+		writeJSON(w, 400, map[string]string{"detail": "no valid token ids provided"})
+		return
+	}
+
+	job := newTokenRefreshBatchJob(ids)
+	s.saveTokenRefreshBatchJob(job)
+	go s.runTokenRefreshBatchJob(job.ID, ids)
+
+	writeJSON(w, 200, s.snapshotTokenRefreshBatchJob(job.ID))
+}
+
+// HandleTokenRefreshJob handles GET /api/v1/tokens/refresh-jobs/{id}.
+func (s *Server) HandleTokenRefreshJob(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+
+	jobID := extractPathParam(r.URL.Path, "/api/v1/tokens/refresh-jobs/")
+	if jobID == "" {
+		writeJSON(w, 400, map[string]string{"detail": "job id required"})
+		return
+	}
+
+	payload := s.snapshotTokenRefreshBatchJob(jobID)
+	if payload == nil {
+		writeJSON(w, 404, map[string]string{"detail": "job not found"})
+		return
+	}
+	writeJSON(w, 200, payload)
 }
 
 // HandleCheckInvalidTokensBatch handles POST /api/v1/tokens/check-invalid-batch.
@@ -980,6 +974,10 @@ func (s *Server) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	failedOnly := r.URL.Query().Get("failed_only") == "true" || r.URL.Query().Get("failed_only") == "1"
 
+	if expired := s.expireStaleRunningLogs(); expired > 0 {
+		log.Printf("[reqlog] expired %d stale running log(s) before listing logs", expired)
+	}
+
 	entries, curPage, totalPages := s.ReqLog.List(page, pageSize, failedOnly)
 
 	// Convert to interface slice
@@ -1008,6 +1006,9 @@ func (s *Server) HandleLogsRunning(w http.ResponseWriter, r *http.Request) {
 
 	var items []interface{}
 	if s.ReqLog != nil {
+		if expired := s.expireStaleRunningLogs(); expired > 0 {
+			log.Printf("[reqlog] expired %d stale running log(s) before listing running logs", expired)
+		}
 		for _, e := range s.ReqLog.Running() {
 			items = append(items, e)
 		}
@@ -1032,6 +1033,10 @@ func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
 	rangeStr := r.URL.Query().Get("range")
 	if rangeStr == "" {
 		rangeStr = "today"
+	}
+
+	if expired := s.expireStaleRunningLogs(); expired > 0 {
+		log.Printf("[reqlog] expired %d stale running log(s) before computing log stats", expired)
 	}
 
 	if s.ReqLog == nil {
@@ -1223,6 +1228,21 @@ type cookieImportJob struct {
 	BackgroundRefresh     map[string]interface{}   `json:"background_refresh"`
 	Timing                map[string]interface{}   `json:"timing,omitempty"`
 	StartedAt             time.Time                `json:"-"`
+}
+
+type tokenRefreshBatchJob struct {
+	ID                string                   `json:"id"`
+	Status            string                   `json:"status"`
+	Total             int                      `json:"total"`
+	RefreshedCount    int                      `json:"refreshed_count"`
+	SuccessCount      int                      `json:"success_count"`
+	SkippedCount      int                      `json:"skipped_count"`
+	MissingCount      int                      `json:"missing_count"`
+	FailedCount       int                      `json:"failed_count"`
+	Items             []map[string]interface{} `json:"items"`
+	BackgroundRefresh map[string]interface{}   `json:"background_refresh"`
+	Timing            map[string]interface{}   `json:"timing,omitempty"`
+	StartedAt         time.Time                `json:"-"`
 }
 
 // HandleImportCookieBatch handles POST /api/v1/refresh-profiles/import-cookie-batch.
@@ -1532,6 +1552,221 @@ func (s *Server) runCookieImportJob(jobID string, inputs []cookieImportInput) {
 	}
 }
 
+func newTokenRefreshBatchJob(ids []string) *tokenRefreshBatchJob {
+	jobID := fmt.Sprintf("token-refresh-%d", time.Now().UnixNano())
+	items := make([]map[string]interface{}, 0, len(ids))
+	for idx, id := range ids {
+		items = append(items, map[string]interface{}{
+			"index":        idx,
+			"status":       "queued",
+			"token_id":     id,
+			"detail":       "等待刷新",
+			"profile_name": id,
+		})
+	}
+
+	return &tokenRefreshBatchJob{
+		ID:        jobID,
+		Status:    "queued",
+		Total:     len(ids),
+		Items:     items,
+		StartedAt: time.Now(),
+		BackgroundRefresh: map[string]interface{}{
+			"job_id":          jobID,
+			"total_count":     len(ids),
+			"completed_count": 0,
+			"queued_count":    len(ids),
+			"running_count":   0,
+			"completed":       false,
+		},
+	}
+}
+
+func (s *Server) saveTokenRefreshBatchJob(job *tokenRefreshBatchJob) {
+	s.tokenRefreshJobMu.Lock()
+	defer s.tokenRefreshJobMu.Unlock()
+	if s.tokenRefreshJobs == nil {
+		s.tokenRefreshJobs = make(map[string]*tokenRefreshBatchJob)
+	}
+	s.tokenRefreshJobs[job.ID] = job
+}
+
+func (s *Server) snapshotTokenRefreshBatchJob(jobID string) map[string]interface{} {
+	s.tokenRefreshJobMu.Lock()
+	defer s.tokenRefreshJobMu.Unlock()
+
+	job := s.tokenRefreshJobs[jobID]
+	if job == nil {
+		return nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(job.Items))
+	for _, item := range job.Items {
+		cloned := make(map[string]interface{}, len(item))
+		for k, v := range item {
+			cloned[k] = v
+		}
+		items = append(items, cloned)
+	}
+
+	background := make(map[string]interface{}, len(job.BackgroundRefresh))
+	for k, v := range job.BackgroundRefresh {
+		background[k] = v
+	}
+
+	payload := map[string]interface{}{
+		"status":             job.Status,
+		"total":              job.Total,
+		"refreshed_count":    job.RefreshedCount,
+		"success_count":      job.SuccessCount,
+		"skipped_count":      job.SkippedCount,
+		"missing_count":      job.MissingCount,
+		"failed_count":       job.FailedCount,
+		"items":              items,
+		"background_refresh": background,
+	}
+	if len(job.Timing) > 0 {
+		timing := make(map[string]interface{}, len(job.Timing))
+		for k, v := range job.Timing {
+			timing[k] = v
+		}
+		payload["timing"] = timing
+	}
+	return payload
+}
+
+func (s *Server) runTokenRefreshBatchJob(jobID string, ids []string) {
+	for idx, id := range ids {
+		s.tokenRefreshJobMu.Lock()
+		job := s.tokenRefreshJobs[jobID]
+		if job == nil {
+			s.tokenRefreshJobMu.Unlock()
+			return
+		}
+		job.Status = "running"
+		job.Items[idx]["status"] = "running"
+		job.Items[idx]["detail"] = "正在刷新"
+		job.BackgroundRefresh["running_count"] = 1
+		job.BackgroundRefresh["queued_count"] = maxInt(job.Total-idx-1, 0)
+		s.tokenRefreshJobMu.Unlock()
+
+		startedAt := time.Now()
+		status := "success"
+		detail := "刷新成功"
+
+		info := s.TokenMgr.GetByID(id)
+		if info == nil {
+			status = "missing"
+			detail = "Token 不存在"
+			s.tokenRefreshJobMu.Lock()
+			job := s.tokenRefreshJobs[jobID]
+			if job != nil {
+				job.MissingCount++
+			}
+			s.tokenRefreshJobMu.Unlock()
+		} else {
+			platform := strings.ToLower(strings.TrimSpace(toString(info["platform"])))
+			tokenValue := strings.TrimSpace(toString(info["value"]))
+			tokenAccountEmail := strings.TrimSpace(toString(info["account_email"]))
+			tokenAccountName := strings.TrimSpace(toString(info["account_name"]))
+			if tokenAccountName == "" {
+				tokenAccountName = tokenAccountEmail
+			}
+
+			s.tokenRefreshJobMu.Lock()
+			job := s.tokenRefreshJobs[jobID]
+			if job != nil {
+				if tokenAccountName != "" {
+					job.Items[idx]["token_account_name"] = tokenAccountName
+					job.Items[idx]["profile_name"] = tokenAccountName
+				}
+				if tokenAccountEmail != "" {
+					job.Items[idx]["token_account_email"] = tokenAccountEmail
+				}
+			}
+			s.tokenRefreshJobMu.Unlock()
+
+			if platform != "leonardo" || tokenValue == "" || s.LeonardoClient == nil {
+				status = "skipped"
+				detail = "已跳过，当前 Token 不支持刷新"
+				s.tokenRefreshJobMu.Lock()
+				job := s.tokenRefreshJobs[jobID]
+				if job != nil {
+					job.SkippedCount++
+				}
+				s.tokenRefreshJobMu.Unlock()
+			} else {
+				session, credits, err := s.validateLeonardoToken(id, tokenValue)
+				if err != nil {
+					status = "failed"
+					detail = err.Error()
+					s.tokenRefreshJobMu.Lock()
+					job := s.tokenRefreshJobs[jobID]
+					if job != nil {
+						job.FailedCount++
+					}
+					s.tokenRefreshJobMu.Unlock()
+				} else {
+					_ = s.TokenMgr.SetStatus(id, "active")
+					if credits != nil {
+						_ = s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+						detail = fmt.Sprintf("刷新成功，剩余积分 %d", credits.TotalTokens)
+					}
+					_ = s.TokenMgr.UpdateExpiry(id, float64(session.JWTExpiry.Unix()))
+					_ = s.TokenMgr.UpdateAccountInfo(id, session.HasuraUserID, session.Email)
+					s.tokenRefreshJobMu.Lock()
+					job := s.tokenRefreshJobs[jobID]
+					if job != nil {
+						job.RefreshedCount++
+						job.SuccessCount++
+						job.Items[idx]["token_account_email"] = strings.TrimSpace(session.Email)
+						if strings.TrimSpace(session.Email) != "" {
+							job.Items[idx]["token_account_name"] = strings.TrimSpace(session.Email)
+							job.Items[idx]["profile_name"] = strings.TrimSpace(session.Email)
+						}
+						job.Items[idx]["jwt_remaining"] = session.GetJWTRemainingSeconds()
+						if credits != nil {
+							job.Items[idx]["credits"] = credits.TotalTokens
+						}
+					}
+					s.tokenRefreshJobMu.Unlock()
+				}
+			}
+		}
+
+		elapsedMs := float64(time.Since(startedAt).Milliseconds())
+
+		s.tokenRefreshJobMu.Lock()
+		job = s.tokenRefreshJobs[jobID]
+		if job != nil {
+			job.Items[idx]["status"] = status
+			job.Items[idx]["detail"] = detail
+			job.Items[idx]["refresh_call_ms"] = elapsedMs
+
+			completedCount := idx + 1
+			job.BackgroundRefresh["completed_count"] = completedCount
+			job.BackgroundRefresh["queued_count"] = maxInt(job.Total-completedCount, 0)
+			job.BackgroundRefresh["running_count"] = 0
+			job.BackgroundRefresh["completed"] = completedCount >= job.Total
+
+			switch {
+			case completedCount < job.Total:
+				job.Status = "running"
+			case job.FailedCount > 0 && job.SuccessCount > 0:
+				job.Status = "partial"
+			case job.FailedCount > 0:
+				job.Status = "failed"
+			default:
+				job.Status = "ok"
+			}
+			job.Timing = map[string]interface{}{
+				"total_ms": float64(time.Since(job.StartedAt).Milliseconds()),
+			}
+		}
+		s.tokenRefreshJobMu.Unlock()
+	}
+}
+
 var startTime = time.Now()
 
 const (
@@ -1750,7 +1985,8 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 				TokenAttempt: 1,
 				AccountName:  accountName,
 				AccountEmail: accountEmail,
-				Model:        fmt.Sprintf("%s (%dx%d %ds)", publicVideoModelID(modelID), body.Width, body.Height, body.Duration),
+				Model:        publicVideoModelID(modelID),
+				ModelParams:  fmt.Sprintf("%dx%d %ds", body.Width, body.Height, body.Duration),
 				Prompt:       body.Prompt,
 				ErrorCode:    "502",
 				ErrorMessage: fmt.Sprintf("generation failed: %v", err),
@@ -1776,7 +2012,8 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			TokenAttempt: 1,
 			AccountName:  accountName,
 			AccountEmail: accountEmail,
-			Model:        fmt.Sprintf("%s (%dx%d %ds)", publicVideoModelID(modelID), body.Width, body.Height, body.Duration),
+			Model:        publicVideoModelID(modelID),
+			ModelParams:  fmt.Sprintf("%dx%d %ds", body.Width, body.Height, body.Duration),
 			Prompt:       body.Prompt,
 			GenerationID: result.GenerationID,
 			CreditCost:   result.APICreditCost,
