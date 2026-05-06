@@ -208,7 +208,7 @@ func (m *Manager) GetAvailable(strategy string) string {
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -242,7 +242,7 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -273,7 +273,7 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	now := float64(time.Now().Unix())
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
 			active = append(active, t)
 		}
 	}
@@ -297,6 +297,10 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	}
 	chosen.LastUsedAt = now
 	return tokenToMap(chosen)
+}
+
+func isTokenExpiredAt(t *Token, now float64) bool {
+	return t != nil && t.ExpiresAt > 0 && now >= t.ExpiresAt
 }
 
 // ReportSuccess marks a token as successfully used.

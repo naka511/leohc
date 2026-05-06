@@ -354,10 +354,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       const tokenId = String(t.id || "").trim();
       const selectedAttr = tokenSelectedIds.has(tokenId) ? "checked" : "";
 
-      const statusClass = `status-${t.status.toLowerCase()}`;
-      const isStatusActive = t.status === "active";
-      const isFrozen = t.status === "exhausted" || t.status === "invalid" || t.status === "abnormal";
-      const displayStatus = STATUS_MAP[t.status.toLowerCase()] || t.status;
+      const tokenExpired = Boolean(t.is_expired);
+      const statusClass = tokenExpired ? "status-disabled" : `status-${t.status.toLowerCase()}`;
+      const isStatusActive = t.status === "active" && !tokenExpired;
+      const isFrozen = tokenExpired || t.status === "exhausted" || t.status === "invalid" || t.status === "abnormal";
+      const displayStatus = tokenExpired ? "已过期" : (STATUS_MAP[t.status.toLowerCase()] || t.status);
       const tokenAccountEmail = String(t.account_email || t.refresh_profile_email || "").trim();
       const accountEmailSafe = escapeHtml(tokenAccountEmail);
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';

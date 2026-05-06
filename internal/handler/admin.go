@@ -2946,6 +2946,9 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 		if info == nil {
 			return nil, ""
 		}
+		if isExpiredTokenInfo(info) {
+			return nil, ""
+		}
 		if !s.seedanceTokenCanRunModel(info, modelID) {
 			return nil, ""
 		}
