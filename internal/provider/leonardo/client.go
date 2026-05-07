@@ -595,6 +595,13 @@ const generationDetailQuery = `query GetGenerationDetail($where: generations_boo
   }
 }`
 
+var generationFailureReasonFields = []string{
+	"statusReason",
+	"failureReason",
+	"errorMessage",
+	"statusMessage",
+}
+
 // ImageRef is a single image reference for guided generation (multi-image reference).
 type ImageRef struct {
 	ID       string `json:"id"`
@@ -1006,6 +1013,104 @@ func (c *Client) GetGenerationDetail(session *TokenSession, generationID string)
 	}
 
 	return &gqlResp.Data.Generations[0], nil
+}
+
+// GetGenerationFailureReason tries to fetch Leonardo's original failure reason for a failed generation.
+// Different upstream schemas expose this on different field names, so we probe a few known candidates
+// and gracefully fall back when a field is unavailable.
+func (c *Client) GetGenerationFailureReason(session *TokenSession, generationID string) (string, error) {
+	if err := c.EnsureValidJWT(session); err != nil {
+		return "", fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	session.mu.RLock()
+	jwt := session.JWT
+	session.mu.RUnlock()
+
+	for _, fieldName := range generationFailureReasonFields {
+		reason, handled, err := c.queryGenerationFailureReasonField(jwt, generationID, fieldName)
+		if err != nil {
+			if isUnknownGraphQLFieldError(err, fieldName) {
+				continue
+			}
+			return "", err
+		}
+		if handled {
+			return strings.TrimSpace(reason), nil
+		}
+	}
+
+	return "", nil
+}
+
+func (c *Client) queryGenerationFailureReasonField(jwt string, generationID string, fieldName string) (string, bool, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationFailureReason",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: fmt.Sprintf(`query GetGenerationFailureReason($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    %s
+    __typename
+  }
+}`, fieldName),
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return "", false, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []map[string]interface{} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return "", false, fmt.Errorf("parse failure reason response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return "", false, fmt.Errorf("failure reason query error: %s", gqlResp.Errors[0].Message)
+	}
+	if len(gqlResp.Data.Generations) == 0 {
+		return "", false, nil
+	}
+
+	value, ok := gqlResp.Data.Generations[0][fieldName]
+	if !ok {
+		return "", false, nil
+	}
+	switch v := value.(type) {
+	case string:
+		return v, true, nil
+	case nil:
+		return "", true, nil
+	default:
+		return fmt.Sprint(v), true, nil
+	}
+}
+
+func isUnknownGraphQLFieldError(err error, fieldName string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	fieldName = strings.ToLower(strings.TrimSpace(fieldName))
+	if fieldName == "" {
+		return false
+	}
+	return strings.Contains(msg, "cannot query field") && strings.Contains(msg, strings.ToLower(fieldName))
 }
 
 func min(a, b int) int {
