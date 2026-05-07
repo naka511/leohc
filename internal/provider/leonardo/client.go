@@ -30,10 +30,12 @@ const (
 )
 
 const (
-	defaultClientTimeout = 120 * time.Second
-	defaultInitWait      = 180 * time.Second
-	s3UploadMaxAttempts  = 3
-	s3UploadRetryDelay   = 2 * time.Second
+	defaultClientTimeout  = 120 * time.Second
+	defaultInitWait       = 180 * time.Second
+	s3UploadMaxAttempts   = 3
+	s3UploadRetryDelay    = 2 * time.Second
+	uploadInitMaxAttempts = 3
+	uploadInitRetryDelay  = 2 * time.Second
 )
 
 const defaultJWTRefreshMargin = 5 * time.Minute
@@ -49,7 +51,12 @@ func isRetryableGraphQLError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unexpected eof") ||
 		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "connection reset")
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "http2: server sent goaway") ||
+		strings.Contains(msg, "graphql returned 502") ||
+		strings.Contains(msg, "graphql returned 503") ||
+		strings.Contains(msg, "graphql returned 504")
 }
 
 // TokenSession holds a Leonardo session with cached JWT.
@@ -595,6 +602,21 @@ const generationDetailQuery = `query GetGenerationDetail($where: generations_boo
   }
 }`
 
+var generationFailureReasonFields = []string{
+	"statusReason",
+	"failureReason",
+	"errorMessage",
+	"statusMessage",
+}
+
+var generationFailureReasonKeywords = []string{
+	"moder",
+	"reason",
+	"error",
+	"message",
+	"fail",
+}
+
 // ImageRef is a single image reference for guided generation (multi-image reference).
 type ImageRef struct {
 	ID       string `json:"id"`
@@ -738,9 +760,6 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Params.Seed == 0 {
 		genReq.Params.Seed = -1
 	}
-	if genReq.Params.PromptEnhance == "" {
-		genReq.Params.PromptEnhance = "OFF"
-	}
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
@@ -748,13 +767,15 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	params := map[string]interface{}{
 		"prompt":           genReq.Params.Prompt,
 		"mode":             genReq.Params.Mode,
-		"prompt_enhance":   genReq.Params.PromptEnhance,
 		"quantity":         genReq.Params.Quantity,
 		"duration":         genReq.Params.Duration,
 		"motion_has_audio": genReq.Params.MotionHasAudio,
 		"width":            genReq.Params.Width,
 		"height":           genReq.Params.Height,
 		"seed":             genReq.Params.Seed,
+	}
+	if strings.TrimSpace(genReq.Params.PromptEnhance) != "" {
+		params["prompt_enhance"] = strings.TrimSpace(genReq.Params.PromptEnhance)
 	}
 
 	// Build guidances map (supports image_reference, start_frame, end_frame)
@@ -1008,6 +1029,323 @@ func (c *Client) GetGenerationDetail(session *TokenSession, generationID string)
 	return &gqlResp.Data.Generations[0], nil
 }
 
+// GetGenerationFailureReason tries to fetch Leonardo's original failure reason for a failed generation.
+// Different upstream schemas expose this on different field names, so we probe a few known candidates
+// and gracefully fall back when a field is unavailable.
+func (c *Client) GetGenerationFailureReason(session *TokenSession, generationID string) (string, error) {
+	if err := c.EnsureValidJWT(session); err != nil {
+		return "", fmt.Errorf("ensure JWT: %w", err)
+	}
+
+	session.mu.RLock()
+	jwt := session.JWT
+	session.mu.RUnlock()
+
+	if reason, err := c.queryGenerationFailureReasonByIntrospection(jwt, generationID); err == nil && strings.TrimSpace(reason) != "" {
+		return strings.TrimSpace(reason), nil
+	} else if err != nil {
+		log.Printf("[Leonardo] generation failure introspection probe failed for %s: %v", generationID, err)
+	}
+
+	for _, fieldName := range generationFailureReasonFields {
+		reason, handled, err := c.queryGenerationFailureReasonField(jwt, generationID, fieldName)
+		if err != nil {
+			if isUnknownGraphQLFieldError(err, fieldName) {
+				continue
+			}
+			return "", err
+		}
+		if handled {
+			return strings.TrimSpace(reason), nil
+		}
+	}
+
+	return "", nil
+}
+
+func (c *Client) queryGenerationFailureReasonByIntrospection(jwt string, generationID string) (string, error) {
+	fields, err := c.listGenerationFields(jwt)
+	if err != nil {
+		return "", err
+	}
+
+	candidates := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range generationFailureReasonFields {
+		if _, ok := fields[field]; ok && isGraphQLLeafType(fields[field]) {
+			candidates = append(candidates, field)
+			seen[field] = struct{}{}
+		}
+	}
+	for name, typeRef := range fields {
+		if _, ok := seen[name]; ok || !isGraphQLLeafType(typeRef) {
+			continue
+		}
+		lowerName := strings.ToLower(strings.TrimSpace(name))
+		for _, keyword := range generationFailureReasonKeywords {
+			if strings.Contains(lowerName, keyword) {
+				candidates = append(candidates, name)
+				seen[name] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return "", nil
+	}
+
+	selection := strings.Join(candidates, "\n    ")
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationFailureDetails",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: fmt.Sprintf(`query GetGenerationFailureDetails($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    %s
+    __typename
+  }
+}`, selection),
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return "", err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []map[string]interface{} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return "", fmt.Errorf("parse failure details response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return "", fmt.Errorf("failure details query error: %s", gqlResp.Errors[0].Message)
+	}
+	if len(gqlResp.Data.Generations) == 0 {
+		return "", nil
+	}
+
+	row := gqlResp.Data.Generations[0]
+	for _, fieldName := range candidates {
+		if reason := extractMeaningfulFailureText(row[fieldName]); reason != "" {
+			return reason, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *Client) queryGenerationFailureReasonField(jwt string, generationID string, fieldName string) (string, bool, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationFailureReason",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: fmt.Sprintf(`query GetGenerationFailureReason($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    %s
+    __typename
+  }
+}`, fieldName),
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return "", false, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []map[string]interface{} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return "", false, fmt.Errorf("parse failure reason response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return "", false, fmt.Errorf("failure reason query error: %s", gqlResp.Errors[0].Message)
+	}
+	if len(gqlResp.Data.Generations) == 0 {
+		return "", false, nil
+	}
+
+	value, ok := gqlResp.Data.Generations[0][fieldName]
+	if !ok {
+		return "", false, nil
+	}
+	switch v := value.(type) {
+	case string:
+		return v, true, nil
+	case nil:
+		return "", true, nil
+	default:
+		return fmt.Sprint(v), true, nil
+	}
+}
+
+func isUnknownGraphQLFieldError(err error, fieldName string) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	fieldName = strings.ToLower(strings.TrimSpace(fieldName))
+	if fieldName == "" {
+		return false
+	}
+	return strings.Contains(msg, "cannot query field") && strings.Contains(msg, strings.ToLower(fieldName))
+}
+
+func (c *Client) listGenerationFields(jwt string) (map[string]*graphqlTypeRef, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "IntrospectGenerationType",
+		Query: `query IntrospectGenerationType {
+  __type(name: "generations") {
+    fields {
+      name
+      type {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+            ofType {
+              kind
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}`,
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Type struct {
+				Fields []struct {
+					Name string          `json:"name"`
+					Type *graphqlTypeRef `json:"type"`
+				} `json:"fields"`
+			} `json:"__type"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse generation introspection response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("generation introspection query error: %s", gqlResp.Errors[0].Message)
+	}
+
+	fields := make(map[string]*graphqlTypeRef, len(gqlResp.Data.Type.Fields))
+	for _, field := range gqlResp.Data.Type.Fields {
+		name := strings.TrimSpace(field.Name)
+		if name == "" {
+			continue
+		}
+		fields[name] = field.Type
+	}
+	return fields, nil
+}
+
+type graphqlTypeRef struct {
+	Kind   string          `json:"kind"`
+	Name   string          `json:"name"`
+	OfType *graphqlTypeRef `json:"ofType"`
+}
+
+func isGraphQLLeafType(typeRef *graphqlTypeRef) bool {
+	if typeRef == nil {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(typeRef.Kind)) {
+	case "SCALAR", "ENUM":
+		return true
+	case "NON_NULL", "LIST":
+		return isGraphQLLeafType(typeRef.OfType)
+	default:
+		return false
+	}
+}
+
+func extractMeaningfulFailureText(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		text := strings.TrimSpace(v)
+		if text == "" {
+			return ""
+		}
+		lower := strings.ToLower(text)
+		if lower == "failed" || lower == "complete" || lower == "pending" || lower == "unknown" {
+			return ""
+		}
+		return text
+	case []interface{}:
+		for _, item := range v {
+			if found := extractMeaningfulFailureText(item); found != "" {
+				return found
+			}
+		}
+	case map[string]interface{}:
+		preferredKeys := []string{
+			"message",
+			"error",
+			"reason",
+			"statusReason",
+			"failureReason",
+			"statusMessage",
+			"moderationMessage",
+			"moderationReason",
+			"detail",
+			"description",
+		}
+		for _, key := range preferredKeys {
+			if found := extractMeaningfulFailureText(v[key]); found != "" {
+				return found
+			}
+		}
+		for _, item := range v {
+			if found := extractMeaningfulFailureText(item); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -1107,31 +1445,40 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 		Query: uploadImageMutation,
 	}
 
-	body, err := c.doGraphQL(jwt, gqlReq)
-	if err != nil {
-		return nil, err
+	for attempt := 1; attempt <= uploadInitMaxAttempts; attempt++ {
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			if attempt < uploadInitMaxAttempts && isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Upload init attempt %d/%d failed: %v; retrying", attempt, uploadInitMaxAttempts, err)
+				time.Sleep(uploadInitRetryDelay)
+				continue
+			}
+			return nil, err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				UploadImage UploadInitResult `json:"uploadImage"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse upload init response: %w", err)
+		}
+
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
+		}
+
+		result := &gqlResp.Data.UploadImage
+		log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
+		return result, nil
 	}
 
-	var gqlResp struct {
-		Data struct {
-			UploadImage UploadInitResult `json:"uploadImage"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-
-	if err := json.Unmarshal(body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse upload init response: %w", err)
-	}
-
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
-	}
-
-	result := &gqlResp.Data.UploadImage
-	log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
-	return result, nil
+	return nil, fmt.Errorf("upload init failed after %d attempts", uploadInitMaxAttempts)
 }
 
 // WaitForInitImage polls Leonardo moderation status until the uploaded image

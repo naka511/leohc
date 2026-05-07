@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -596,7 +597,8 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 	}
 
 	genReq := &leonardo.GenerateRequest{
-		Model: modelID,
+		Model:  modelID,
+		Public: true,
 		Params: leonardo.GenerateParams{
 			Prompt:         prompt,
 			Mode:           "RESOLUTION_720",
@@ -666,8 +668,14 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 		}
 		elapsed := time.Since(startTime).Seconds()
 		if status.Status == "FAILED" {
+			failureMessage := "Leonardo reported generation status FAILED"
+			if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, generationID); reasonErr != nil {
+				log.Printf("[Leonardo] failed to fetch generation failure reason for %s: %v", generationID, reasonErr)
+			} else if strings.TrimSpace(reason) != "" {
+				failureMessage = strings.TrimSpace(reason)
+			}
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
+				s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 502, "", "", failureMessage)
 				s.ReqLog.UpdateDuration(generationID, elapsed)
 			}
 			s.refreshTokenCredits(usedTokenID, session)
