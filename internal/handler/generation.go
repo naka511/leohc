@@ -597,7 +597,8 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 	}
 
 	genReq := &leonardo.GenerateRequest{
-		Model: modelID,
+		Model:  modelID,
+		Public: true,
 		Params: leonardo.GenerateParams{
 			Prompt:         prompt,
 			Mode:           "RESOLUTION_720",

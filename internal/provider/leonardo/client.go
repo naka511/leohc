@@ -753,9 +753,6 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Params.Seed == 0 {
 		genReq.Params.Seed = -1
 	}
-	if genReq.Params.PromptEnhance == "" {
-		genReq.Params.PromptEnhance = "OFF"
-	}
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
@@ -763,13 +760,15 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	params := map[string]interface{}{
 		"prompt":           genReq.Params.Prompt,
 		"mode":             genReq.Params.Mode,
-		"prompt_enhance":   genReq.Params.PromptEnhance,
 		"quantity":         genReq.Params.Quantity,
 		"duration":         genReq.Params.Duration,
 		"motion_has_audio": genReq.Params.MotionHasAudio,
 		"width":            genReq.Params.Width,
 		"height":           genReq.Params.Height,
 		"seed":             genReq.Params.Seed,
+	}
+	if strings.TrimSpace(genReq.Params.PromptEnhance) != "" {
+		params["prompt_enhance"] = strings.TrimSpace(genReq.Params.PromptEnhance)
 	}
 
 	// Build guidances map (supports image_reference, start_frame, end_frame)
