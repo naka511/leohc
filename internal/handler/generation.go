@@ -77,8 +77,9 @@ type videoGenerationAttemptFailure struct {
 	MarkInvalid     bool
 }
 
-type videoGenerationSuccess struct {
-	FinalURL string
+type videoGenerationSubmission struct {
+	GenerationID string
+	CreatedAt    time.Time
 }
 
 func (s *Server) expireStaleRunningLogs() int {
@@ -145,6 +146,10 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // HandleVideoGeneration handles POST /v1/video/generations.
 func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if err := s.requireAPIKey(r); err != nil {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
@@ -225,12 +230,17 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		success, failure := s.performLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
+		submission, failure := s.submitLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
 		if failure == nil {
-			writeJSON(w, 200, map[string]interface{}{
-				"created": time.Now().Unix(),
-				"model":   responseModelID,
-				"data":    []map[string]interface{}{{"url": success.FinalURL}},
+			go s.trackLeonardoVideoGeneration(session, usedTokenID, modelID, submission.GenerationID, submission.CreatedAt)
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{
+				"id":         submission.GenerationID,
+				"object":     "video.generation",
+				"created":    submission.CreatedAt.Unix(),
+				"model":      responseModelID,
+				"status":     "in_progress",
+				"poll_url":   fmt.Sprintf("/v1/video/generations/%s", submission.GenerationID),
+				"request_id": submission.GenerationID,
 			})
 			return
 		}
@@ -278,6 +288,70 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+}
+
+// HandleVideoGenerationStatus handles GET /v1/video/generations/{id}.
+func (s *Server) HandleVideoGenerationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.requireAPIKey(r); err != nil {
+		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
+		return
+	}
+	generationID := extractPathParam(r.URL.Path, "/v1/video/generations/")
+	if generationID == "" {
+		writeJSON(w, 400, errorResp("generation id is required", "invalid_request_error"))
+		return
+	}
+	if s.ReqLog == nil {
+		writeJSON(w, 404, errorResp("generation not found", "not_found_error"))
+		return
+	}
+
+	entry, ok := s.ReqLog.FindByGenerationID(generationID)
+	if !ok {
+		writeJSON(w, 404, errorResp("generation not found", "not_found_error"))
+		return
+	}
+
+	modelID := publicVideoModelID(strings.TrimSpace(entry.Model))
+	status := "in_progress"
+	response := map[string]interface{}{
+		"id":         generationID,
+		"object":     "video.generation",
+		"created":    int64(entry.Timestamp),
+		"model":      modelID,
+		"status":     status,
+		"request_id": generationID,
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(entry.TaskStatus)) {
+	case "COMPLETE":
+		status = "succeeded"
+		response["status"] = status
+		if entry.PreviewURL != "" {
+			response["data"] = []map[string]interface{}{{"url": entry.PreviewURL}}
+		} else {
+			response["data"] = []map[string]interface{}{}
+		}
+	case "FAILED":
+		status = "failed"
+		response["status"] = status
+		response["error"] = map[string]interface{}{
+			"message": strings.TrimSpace(entry.ErrorMessage),
+			"type":    "server_error",
+		}
+	default:
+		response["status"] = status
+	}
+
+	returnedCode := http.StatusOK
+	if status == "in_progress" {
+		returnedCode = http.StatusAccepted
+	}
+	writeJSON(w, returnedCode, response)
 }
 
 // ---- Helpers ----
@@ -511,7 +585,7 @@ func publicVideoModelID(modelID string) string {
 	}
 }
 
-func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSuccess, *videoGenerationAttemptFailure) {
+func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSubmission, *videoGenerationAttemptFailure) {
 	if s.LeonardoClient == nil {
 		return nil, &videoGenerationAttemptFailure{
 			StatusCode:      http.StatusInternalServerError,
@@ -574,31 +648,33 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 		})
 	}
 
+	return &videoGenerationSubmission{
+		GenerationID: result.GenerationID,
+		CreatedAt:    startTime,
+	}, nil
+}
+
+func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, modelID string, generationID string, startTime time.Time) {
 	timeout := s.Config.GetInt("generate_timeout", 600)
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 
 	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
-		status, pollErr := s.LeonardoClient.PollGenerationStatus(session, result.GenerationID)
+		status, pollErr := s.LeonardoClient.PollGenerationStatus(session, generationID)
 		if pollErr != nil {
 			continue
 		}
 		elapsed := time.Since(startTime).Seconds()
 		if status.Status == "FAILED" {
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
-				s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
+				s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
+				s.ReqLog.UpdateDuration(generationID, elapsed)
 			}
 			s.refreshTokenCredits(usedTokenID, session)
-			return nil, &videoGenerationAttemptFailure{
-				StatusCode:      http.StatusBadGateway,
-				Message:         "Generation failed in Leonardo",
-				ErrorType:       "server_error",
-				RetryCodeSource: "generation_failed failed leonardo_failed",
-			}
+			return
 		}
 		if status.Status == "COMPLETE" {
-			detail, detailErr := s.LeonardoClient.GetGenerationDetail(session, result.GenerationID)
+			detail, detailErr := s.LeonardoClient.GetGenerationDetail(session, generationID)
 			if detailErr == nil && len(detail.Images) > 0 {
 				var url string
 				for _, img := range detail.Images {
@@ -608,38 +684,31 @@ func (s *Server) performLeonardoVideoGeneration(session *leonardo.TokenSession, 
 					}
 				}
 				if url != "" {
-					finalURL, materializeErr := s.materializeGeneratedMedia(url, result.GenerationID, "video")
+					finalURL, materializeErr := s.materializeGeneratedMedia(url, generationID, "video")
 					if materializeErr != nil {
-						s.refreshTokenCredits(usedTokenID, session)
-						return nil, &videoGenerationAttemptFailure{
-							StatusCode:      http.StatusBadGateway,
-							Message:         fmt.Sprintf("save generated media failed: %v", materializeErr),
-							ErrorType:       "server_error",
-							RetryCodeSource: extractRetryCodeSource(materializeErr.Error()),
+						if s.ReqLog != nil {
+							s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 502, "", "", fmt.Sprintf("save generated media failed: %v", materializeErr))
+							s.ReqLog.UpdateDuration(generationID, elapsed)
 						}
+						s.refreshTokenCredits(usedTokenID, session)
+						return
 					}
 					if s.ReqLog != nil {
-						s.ReqLog.UpdateByGenerationID(result.GenerationID, "COMPLETE", 200, finalURL, "video", "")
-						s.ReqLog.UpdateDuration(result.GenerationID, elapsed)
+						s.ReqLog.UpdateByGenerationID(generationID, "COMPLETE", 200, finalURL, "video", "")
+						s.ReqLog.UpdateDuration(generationID, elapsed)
 					}
 					s.reportSeedanceGenerationSuccess(usedTokenID, modelID)
 					s.refreshTokenCredits(usedTokenID, session)
-					return &videoGenerationSuccess{FinalURL: finalURL}, nil
+					return
 				}
 			}
 		}
 	}
 	if s.ReqLog != nil {
-		s.ReqLog.UpdateByGenerationID(result.GenerationID, "FAILED", 504, "", "", "Generation timed out")
-		s.ReqLog.UpdateDuration(result.GenerationID, time.Since(startTime).Seconds())
+		s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 504, "", "", "Generation timed out")
+		s.ReqLog.UpdateDuration(generationID, time.Since(startTime).Seconds())
 	}
 	s.refreshTokenCredits(usedTokenID, session)
-	return nil, &videoGenerationAttemptFailure{
-		StatusCode:      http.StatusGatewayTimeout,
-		Message:         "Generation timed out",
-		ErrorType:       "timeout",
-		RetryCodeSource: "timeout generation_timed_out",
-	}
 }
 
 func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {

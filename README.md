@@ -5,6 +5,7 @@
 - OpenAI 兼容接口
   - `GET /v1/models`
   - `POST /v1/video/generations`
+  - `GET /v1/video/generations/{generation_id}`
 - Leonardo 管理接口
   - Token 导入、刷新、积分查询
   - 视频生成、高级引导参数、任务状态查询
@@ -96,6 +97,68 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     "duration": 4,
     "size": "1280x720"
   }'
+```
+
+Async change:
+
+- `POST /v1/video/generations` now submits the job only.
+- The submit endpoint returns `202 Accepted` with `generation_id`.
+- Clients must poll `GET /v1/video/generations/{generation_id}` until the job reaches `succeeded` or `failed`.
+
+Submit response example:
+
+```json
+{
+  "id": "1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "object": "video.generation",
+  "created": 1770000000,
+  "model": "video-2.0-fast",
+  "status": "in_progress",
+  "poll_url": "/v1/video/generations/1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "request_id": "1f149999-aaaa-bbbb-cccc-1234567890ab"
+}
+```
+
+Poll example:
+
+```bash
+curl http://127.0.0.1:8787/v1/video/generations/1f149999-aaaa-bbbb-cccc-1234567890ab \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+Successful poll response example:
+
+```json
+{
+  "id": "1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "object": "video.generation",
+  "created": 1770000000,
+  "model": "video-2.0-fast",
+  "status": "succeeded",
+  "request_id": "1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "data": [
+    {
+      "url": "https://example.com/final.mp4"
+    }
+  ]
+}
+```
+
+Failed poll response example:
+
+```json
+{
+  "id": "1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "object": "video.generation",
+  "created": 1770000000,
+  "model": "video-2.0-fast",
+  "status": "failed",
+  "request_id": "1f149999-aaaa-bbbb-cccc-1234567890ab",
+  "error": {
+    "message": "Generation failed in Leonardo",
+    "type": "server_error"
+  }
+}
 ```
 
 常用参数：

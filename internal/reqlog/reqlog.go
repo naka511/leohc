@@ -210,6 +210,19 @@ func (s *Store) UpdateDuration(genID string, durationSec float64) {
 	}
 }
 
+// FindByGenerationID returns a copy of the log entry for the given generation ID.
+func (s *Store) FindByGenerationID(genID string) (Entry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, entry := range s.entries {
+		if entry.GenerationID == genID {
+			return entry, true
+		}
+	}
+	return Entry{}, false
+}
+
 // List returns paginated log entries with optional filtering.
 func (s *Store) List(page, pageSize int, failedOnly bool) ([]Entry, int, int) {
 	s.mu.Lock()

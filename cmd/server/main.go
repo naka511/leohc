@@ -107,6 +107,7 @@ func main() {
 	mux.HandleFunc("/v1/images/generations", srv.HandleImageGeneration)
 	mux.HandleFunc("/v1/chat/completions", srv.HandleChatCompletions)
 	mux.HandleFunc("/v1/video/generations", srv.HandleVideoGeneration)
+	mux.HandleFunc("/v1/video/generations/", srv.HandleVideoGenerationStatus)
 	mux.HandleFunc("/health", srv.HandleHealth)
 
 	// ─── Admin auth ───
