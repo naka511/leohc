@@ -30,10 +30,12 @@ const (
 )
 
 const (
-	defaultClientTimeout = 120 * time.Second
-	defaultInitWait      = 180 * time.Second
-	s3UploadMaxAttempts  = 3
-	s3UploadRetryDelay   = 2 * time.Second
+	defaultClientTimeout  = 120 * time.Second
+	defaultInitWait       = 180 * time.Second
+	s3UploadMaxAttempts   = 3
+	s3UploadRetryDelay    = 2 * time.Second
+	uploadInitMaxAttempts = 3
+	uploadInitRetryDelay  = 2 * time.Second
 )
 
 const defaultJWTRefreshMargin = 5 * time.Minute
@@ -49,7 +51,12 @@ func isRetryableGraphQLError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unexpected eof") ||
 		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "connection reset")
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "http2: server sent goaway") ||
+		strings.Contains(msg, "graphql returned 502") ||
+		strings.Contains(msg, "graphql returned 503") ||
+		strings.Contains(msg, "graphql returned 504")
 }
 
 // TokenSession holds a Leonardo session with cached JWT.
@@ -1438,31 +1445,40 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 		Query: uploadImageMutation,
 	}
 
-	body, err := c.doGraphQL(jwt, gqlReq)
-	if err != nil {
-		return nil, err
+	for attempt := 1; attempt <= uploadInitMaxAttempts; attempt++ {
+		body, err := c.doGraphQL(jwt, gqlReq)
+		if err != nil {
+			if attempt < uploadInitMaxAttempts && isRetryableGraphQLError(err) {
+				log.Printf("[Leonardo] Upload init attempt %d/%d failed: %v; retrying", attempt, uploadInitMaxAttempts, err)
+				time.Sleep(uploadInitRetryDelay)
+				continue
+			}
+			return nil, err
+		}
+
+		var gqlResp struct {
+			Data struct {
+				UploadImage UploadInitResult `json:"uploadImage"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+
+		if err := json.Unmarshal(body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse upload init response: %w", err)
+		}
+
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
+		}
+
+		result := &gqlResp.Data.UploadImage
+		log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
+		return result, nil
 	}
 
-	var gqlResp struct {
-		Data struct {
-			UploadImage UploadInitResult `json:"uploadImage"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-
-	if err := json.Unmarshal(body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse upload init response: %w", err)
-	}
-
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("upload init error: %s", gqlResp.Errors[0].Message)
-	}
-
-	result := &gqlResp.Data.UploadImage
-	log.Printf("[Leonardo] Upload init: uploadId=%s, url=%s", result.UploadID, result.URL)
-	return result, nil
+	return nil, fmt.Errorf("upload init failed after %d attempts", uploadInitMaxAttempts)
 }
 
 // WaitForInitImage polls Leonardo moderation status until the uploaded image
