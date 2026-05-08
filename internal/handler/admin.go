@@ -2127,7 +2127,7 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if status.Status == "FAILED" {
 		if s.ReqLog != nil {
-			s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
+			s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "generation status FAILED")
 		}
 	}
 
@@ -2794,7 +2794,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 		case "FAILED":
 			log.Printf("[poll] generation %s failed (%.1fs)", genID, elapsed)
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "Leonardo reported generation status FAILED")
+				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "generation status FAILED")
 				s.ReqLog.UpdateDuration(genID, elapsed)
 			}
 			s.refreshTokenCredits(tokenID, session)
