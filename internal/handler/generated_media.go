@@ -20,6 +20,7 @@ import (
 const (
 	generatedMediaFetchTimeout = 5 * time.Minute
 	maxGeneratedMediaBytes     = 500 << 20
+	imgBedUploadAttempts       = 2
 )
 
 type generatedMediaPayload struct {
@@ -45,36 +46,46 @@ func (s *Server) materializeGeneratedMedia(sourceURL, generationID, mediaKind st
 	imgBedReady := imgBedEnabled && imgBedAPIURL != "" && imgBedAPIKey != ""
 
 	if imgBedReady && useUpstream {
-		uploadedURL, uploadErr := s.uploadGeneratedMediaURLToImgBed(sourceURL, imgBedAPIURL, imgBedAPIKey)
+		uploadedURL, uploadErr := s.uploadGeneratedMediaURLToImgBedWithRetry(sourceURL, imgBedAPIURL, imgBedAPIKey)
 		if uploadErr == nil {
 			return uploadedURL, nil
 		}
 		log.Printf("[generated] image bed remote url upload failed for %s: %v", sourceURL, uploadErr)
 	}
 
+	if imgBedEnabled && !imgBedReady {
+		log.Printf("[generated] image bed enabled but config incomplete; api_url=%t api_key=%t", imgBedAPIURL != "", imgBedAPIKey != "")
+	}
+
 	if !imgBedReady && useUpstream {
-		return sourceURL, nil
+		if !imgBedEnabled {
+			return sourceURL, nil
+		}
 	}
 
 	payload, err := s.fetchGeneratedMediaPayload(sourceURL, generationID, mediaKind)
 	if err != nil {
+		if useUpstream {
+			if !imgBedEnabled {
+				return sourceURL, nil
+			}
+		}
+		if imgBedEnabled {
+			return "", fmt.Errorf("image bed upload failed and local fallback fetch failed: %w", err)
+		}
 		if useUpstream {
 			return sourceURL, nil
 		}
 		return "", err
 	}
 
-	if imgBedEnabled && !imgBedReady {
-		log.Printf("[generated] image bed enabled but config incomplete; api_url=%t api_key=%t", imgBedAPIURL != "", imgBedAPIKey != "")
-	}
-
 	if imgBedReady {
-		uploadedURL, uploadErr := s.uploadGeneratedMediaToImgBed(payload, imgBedAPIURL, imgBedAPIKey)
+		uploadedURL, uploadErr := s.uploadGeneratedMediaToImgBedWithRetry(payload, imgBedAPIURL, imgBedAPIKey)
 		if uploadErr == nil {
 			return uploadedURL, nil
 		}
 		log.Printf("[generated] image bed upload failed for %s: %v", payload.FileName, uploadErr)
-		if useUpstream {
+		if useUpstream && !imgBedEnabled {
 			return sourceURL, nil
 		}
 	}
@@ -87,6 +98,42 @@ func (s *Server) materializeGeneratedMedia(sourceURL, generationID, mediaKind st
 		return "", err
 	}
 	return localURL, nil
+}
+
+func (s *Server) uploadGeneratedMediaToImgBedWithRetry(payload *generatedMediaPayload, apiURL, apiKey string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= imgBedUploadAttempts; attempt++ {
+		uploadedURL, err := s.uploadGeneratedMediaToImgBed(payload, apiURL, apiKey)
+		if err == nil {
+			return uploadedURL, nil
+		}
+		lastErr = err
+		if attempt < imgBedUploadAttempts {
+			log.Printf("[generated] image bed upload attempt %d/%d failed for %s: %v; retrying", attempt, imgBedUploadAttempts, payload.FileName, err)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("image bed upload failed")
+	}
+	return "", lastErr
+}
+
+func (s *Server) uploadGeneratedMediaURLToImgBedWithRetry(sourceURL, apiURL, apiKey string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= imgBedUploadAttempts; attempt++ {
+		uploadedURL, err := s.uploadGeneratedMediaURLToImgBed(sourceURL, apiURL, apiKey)
+		if err == nil {
+			return uploadedURL, nil
+		}
+		lastErr = err
+		if attempt < imgBedUploadAttempts {
+			log.Printf("[generated] image bed remote url upload attempt %d/%d failed for %s: %v; retrying", attempt, imgBedUploadAttempts, sourceURL, err)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("image bed remote url upload failed")
+	}
+	return "", lastErr
 }
 
 func (s *Server) fetchGeneratedMediaPayload(sourceURL, generationID, mediaKind string) (*generatedMediaPayload, error) {
