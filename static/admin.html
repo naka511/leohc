@@ -485,6 +485,29 @@
     </div>
   </div>
 
+  <div id="cleanupConfirmModal" class="dialog-modal" aria-hidden="true">
+    <div class="dialog-card cleanup-confirm-card" role="dialog" aria-modal="true" aria-label="清理 Token">
+      <div class="list-head" style="margin-bottom: 10px;">
+        <h2 id="cleanupConfirmTitle">清理 Token</h2>
+        <button id="cleanupConfirmCloseBtn" class="secondary small" type="button">关闭</button>
+      </div>
+      <div class="cleanup-confirm-grid">
+        <div class="cleanup-confirm-stat">
+          <span id="cleanupConfirmCountLabel">匹配 Token</span>
+          <strong id="cleanupConfirmMatchedCount">0</strong>
+        </div>
+        <div class="cleanup-confirm-stat">
+          <span>将删除刷新配置</span>
+          <strong id="cleanupConfirmProfileCount">0</strong>
+        </div>
+      </div>
+      <div class="actions cleanup-confirm-actions">
+        <button id="cleanupConfirmDeleteBtn" class="danger" type="button">确认删除</button>
+        <span id="cleanupConfirmMsg" class="msg"></span>
+      </div>
+    </div>
+  </div>
+
   <div id="previewModal" class="preview-modal" aria-hidden="true">
     <div class="preview-modal-dialog" role="dialog" aria-modal="true" aria-label="媒体预览">
       <button id="previewCloseBtn" class="preview-close" type="button">关闭</button>

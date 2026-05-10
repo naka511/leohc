@@ -71,6 +71,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   const refreshTokensBatchBtn = document.getElementById("refreshTokensBatchBtn");
   const cleanupInvalidTokensBtn = document.getElementById("cleanupInvalidTokensBtn");
   const cleanupExhaustedTokensBtn = document.getElementById("cleanupExhaustedTokensBtn");
+  const cleanupConfirmModal = document.getElementById("cleanupConfirmModal");
+  const cleanupConfirmTitle = document.getElementById("cleanupConfirmTitle");
+  const cleanupConfirmCloseBtn = document.getElementById("cleanupConfirmCloseBtn");
+  const cleanupConfirmCountLabel = document.getElementById("cleanupConfirmCountLabel");
+  const cleanupConfirmMatchedCount = document.getElementById("cleanupConfirmMatchedCount");
+  const cleanupConfirmProfileCount = document.getElementById("cleanupConfirmProfileCount");
+  const cleanupConfirmDeleteBtn = document.getElementById("cleanupConfirmDeleteBtn");
+  const cleanupConfirmMsg = document.getElementById("cleanupConfirmMsg");
   const refreshModal = document.getElementById("refreshModal");
   const refreshModalCloseBtn = document.getElementById("refreshModalCloseBtn");
   const taskReportModal = document.getElementById("taskReportModal");
@@ -106,6 +114,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let latestTokenSummary = null;
   let latestTokenPagination = null;
   let activeTaskTracker = null;
+  let cleanupConfirmState = null;
   const TOKEN_PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000];
   const TOKEN_PAGE_SIZE_STORAGE_KEY = "leo-go.tokenPageSize";
   function readTokenPageSize() {
@@ -596,6 +605,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (event.target === taskReportModal) closeDialog(taskReportModal);
     });
   }
+  if (cleanupConfirmCloseBtn) {
+    cleanupConfirmCloseBtn.addEventListener("click", () => closeDialog(cleanupConfirmModal));
+  }
+  if (cleanupConfirmModal) {
+    cleanupConfirmModal.addEventListener("click", (event) => {
+      if (event.target === cleanupConfirmModal) closeDialog(cleanupConfirmModal);
+    });
+  }
 
   window.deleteToken = async (id) => {
     if (!confirm("确定要删除这个 Token 吗？")) return;
@@ -848,11 +865,42 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  async function cleanupTokensByStatus(status, label, btn) {
-    const ok = confirm(`确定要清理所有${label} Token 吗？此操作会直接删除符合条件的账号。`);
-    if (!ok) return;
+  async function countTokensForCleanup(status) {
+    const params = new URLSearchParams({ status, page: "1", page_size: "1" });
+    const res = await fetch(`/api/v1/tokens?${params.toString()}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.detail || "获取待清理数量失败");
+    }
+    return Number(data?.pagination?.total ?? data?.summary?.filtered ?? 0) || 0;
+  }
 
+  async function openCleanupConfirm(status, label, btn) {
     if (btn) btn.disabled = true;
+    if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = "正在统计...";
+    try {
+      const count = await countTokensForCleanup(status);
+      cleanupConfirmState = { status, label, sourceButton: btn };
+      if (cleanupConfirmTitle) cleanupConfirmTitle.textContent = `清理${label}`;
+      if (cleanupConfirmCountLabel) cleanupConfirmCountLabel.textContent = `${label} Token`;
+      if (cleanupConfirmMatchedCount) cleanupConfirmMatchedCount.textContent = String(count);
+      if (cleanupConfirmProfileCount) cleanupConfirmProfileCount.textContent = String(count);
+      if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = count <= 0;
+      if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = count > 0 ? "" : `没有可清理的${label} Token`;
+      openDialog(cleanupConfirmModal);
+    } catch (err) {
+      showToast(err.message || `统计${label} Token 失败`, true, { duration: 8000 });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function runCleanupFromConfirm() {
+    if (!cleanupConfirmState) return;
+    const { status, label, sourceButton } = cleanupConfirmState;
+    if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = true;
+    if (sourceButton) sourceButton.disabled = true;
+    if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = "正在删除...";
     showToast(`正在清理${label} Token...`, false, { duration: 0 });
     try {
       const res = await fetch("/api/v1/tokens/cleanup-status", {
@@ -872,24 +920,31 @@ document.addEventListener("DOMContentLoaded", async () => {
         { duration: 7000 }
       );
       tokenSelectedIds.clear();
+      closeDialog(cleanupConfirmModal);
       await loadTokens();
     } catch (err) {
+      if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = err.message || `清理${label} Token 失败`;
       showToast(err.message || `清理${label} Token 失败`, true, { duration: 8000 });
     } finally {
-      if (btn) btn.disabled = false;
+      if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = false;
+      if (sourceButton) sourceButton.disabled = false;
       updateTokenSelectionSummary();
     }
   }
 
+  if (cleanupConfirmDeleteBtn) {
+    cleanupConfirmDeleteBtn.addEventListener("click", runCleanupFromConfirm);
+  }
+
   if (cleanupInvalidTokensBtn) {
     cleanupInvalidTokensBtn.addEventListener("click", () => {
-      cleanupTokensByStatus("invalid", "已失效", cleanupInvalidTokensBtn);
+      openCleanupConfirm("invalid", "已失效", cleanupInvalidTokensBtn);
     });
   }
 
   if (cleanupExhaustedTokensBtn) {
     cleanupExhaustedTokensBtn.addEventListener("click", () => {
-      cleanupTokensByStatus("exhausted", "额度耗尽", cleanupExhaustedTokensBtn);
+      openCleanupConfirm("exhausted", "额度耗尽", cleanupExhaustedTokensBtn);
     });
   }
 
