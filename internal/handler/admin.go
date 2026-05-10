@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -63,6 +64,31 @@ func (s *Server) requireAdmin(r *http.Request) error {
 	cookie, err := r.Cookie("admin_session")
 	if err != nil || cookie.Value != s.Config.GetString("admin_session_secret", "leo-go-session") {
 		return fmt.Errorf("unauthorized")
+	}
+	return nil
+}
+
+func (s *Server) requireCookieImportKey(r *http.Request) error {
+	if s == nil || s.Config == nil {
+		return fmt.Errorf("cookie import api key is not configured")
+	}
+	expected := strings.TrimSpace(s.Config.GetString("cookie_import_api_key"))
+	if expected == "" {
+		return fmt.Errorf("cookie import api key is not configured")
+	}
+
+	key := strings.TrimSpace(r.Header.Get("X-Import-Key"))
+	if key == "" {
+		key = strings.TrimSpace(r.Header.Get("X-Token-Pool-Key"))
+	}
+	if key == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			key = strings.TrimSpace(auth[7:])
+		}
+	}
+	if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(expected)) != 1 {
+		return fmt.Errorf("invalid import key")
 	}
 	return nil
 }
@@ -1302,6 +1328,199 @@ func (s *Server) HandleImportCookieJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, payload)
+}
+
+// HandleTokenCookieImport handles machine-to-machine cookie imports into the token pool.
+func (s *Server) HandleTokenCookieImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.requireCookieImportKey(r); err != nil {
+		status := http.StatusUnauthorized
+		if strings.Contains(err.Error(), "not configured") {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]string{"detail": err.Error()})
+		return
+	}
+
+	var body struct {
+		Name        string              `json:"name"`
+		Cookie      string              `json:"cookie"`
+		Cookies     []string            `json:"cookies"`
+		Items       []cookieImportInput `json:"items"`
+		Source      string              `json:"source"`
+		AutoRefresh *bool               `json:"auto_refresh"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	inputs := make([]cookieImportInput, 0, len(body.Items)+len(body.Cookies)+1)
+	if cookie := normalizeImportedCookie(body.Cookie); cookie != "" {
+		inputs = append(inputs, cookieImportInput{Name: strings.TrimSpace(body.Name), Cookie: cookie})
+	}
+	for _, cookie := range body.Cookies {
+		if normalized := normalizeImportedCookie(cookie); normalized != "" {
+			inputs = append(inputs, cookieImportInput{Cookie: normalized})
+		}
+	}
+	for _, item := range body.Items {
+		if cookie := normalizeImportedCookie(item.Cookie); cookie != "" {
+			inputs = append(inputs, cookieImportInput{Name: strings.TrimSpace(item.Name), Cookie: cookie})
+		}
+	}
+	if len(inputs) == 0 {
+		writeJSON(w, 400, map[string]string{"detail": "no valid cookie items found"})
+		return
+	}
+
+	maxItems := 50
+	if s.Config != nil {
+		maxItems = s.Config.GetInt("cookie_import_max_items", 50)
+	}
+	if maxItems < 1 {
+		maxItems = 50
+	}
+	if len(inputs) > maxItems {
+		writeJSON(w, 400, map[string]interface{}{
+			"detail":    "too many cookie items",
+			"max_items": maxItems,
+		})
+		return
+	}
+
+	autoRefresh := true
+	if body.AutoRefresh != nil {
+		autoRefresh = *body.AutoRefresh
+	}
+	source := strings.TrimSpace(body.Source)
+	if source == "" {
+		source = "api_cookie_import"
+	}
+
+	payload := s.importCookiesToTokenPool(inputs, source, autoRefresh)
+	writeJSON(w, 200, payload)
+}
+
+func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source string, autoRefresh bool) map[string]interface{} {
+	items := make([]map[string]interface{}, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	successCount := 0
+	failedCount := 0
+	duplicateCount := 0
+	requestDuplicateCount := 0
+	overwrittenCount := 0
+
+	for idx, input := range inputs {
+		item := map[string]interface{}{
+			"index":        idx,
+			"profile_name": strings.TrimSpace(input.Name),
+		}
+		if item["profile_name"] == "" {
+			item["profile_name"] = fmt.Sprintf("Cookie #%d", idx+1)
+		}
+
+		if _, ok := seen[input.Cookie]; ok {
+			requestDuplicateCount++
+			duplicateCount++
+			item["status"] = "skipped"
+			item["detail"] = "duplicate cookie in request"
+			items = append(items, item)
+			continue
+		}
+		seen[input.Cookie] = struct{}{}
+
+		accountName := strings.TrimSpace(input.Name)
+		accountEmail := ""
+		accountUserID := ""
+		var credits *leonardo.Credits
+		var expiresAt float64
+
+		if s.LeonardoClient != nil {
+			session, creditInfo, err := s.validateLeonardoToken("", input.Cookie)
+			if err != nil {
+				failedCount++
+				item["status"] = "failed"
+				item["detail"] = err.Error()
+				items = append(items, item)
+				continue
+			}
+			if session != nil {
+				accountEmail = strings.TrimSpace(session.Email)
+				accountUserID = strings.TrimSpace(session.HasuraUserID)
+				expiresAt = float64(session.JWTExpiry.Unix())
+				if accountName == "" {
+					accountName = accountEmail
+				}
+			}
+			credits = creditInfo
+		}
+
+		info, overwritten, duplicate, err := s.TokenMgr.UpsertImportedCookie(input.Cookie, accountName, accountEmail, accountUserID, source, autoRefresh)
+		if err != nil {
+			failedCount++
+			item["status"] = "failed"
+			item["detail"] = err.Error()
+			items = append(items, item)
+			continue
+		}
+
+		tokenID, _ := info["id"].(string)
+		if tokenID != "" {
+			item["token_id"] = tokenID
+			item["profile_id"] = tokenID
+		}
+		if accountName != "" {
+			item["token_account_name"] = accountName
+			item["profile_name"] = accountName
+		}
+		if accountEmail != "" {
+			item["token_account_email"] = accountEmail
+		}
+		if accountUserID != "" {
+			item["token_account_user_id"] = accountUserID
+		}
+		if expiresAt > 0 && tokenID != "" {
+			_ = s.TokenMgr.UpdateExpiry(tokenID, expiresAt)
+			item["expires_at"] = expiresAt
+		}
+		if credits != nil && tokenID != "" {
+			totalCredits := float64(credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens)
+			_ = s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), totalCredits)
+			item["credits"] = credits.TotalTokens
+			item["credits_total"] = totalCredits
+		}
+
+		successCount++
+		item["status"] = "active"
+		item["detail"] = "imported"
+		item["auto_refresh"] = autoRefresh
+		item["overwritten"] = overwritten
+		item["duplicate"] = duplicate
+		if overwritten {
+			overwrittenCount++
+			item["detail"] = "updated existing account cookie"
+		}
+		if duplicate {
+			duplicateCount++
+			item["detail"] = "cookie already existed"
+		}
+		items = append(items, item)
+	}
+
+	return map[string]interface{}{
+		"ok":                      failedCount == 0,
+		"total":                   len(inputs),
+		"success_count":           successCount,
+		"failed_count":            failedCount,
+		"duplicate_count":         duplicateCount,
+		"request_duplicate_count": requestDuplicateCount,
+		"overwritten_count":       overwrittenCount,
+		"items":                   items,
+	}
 }
 
 func normalizeImportedCookie(raw string) string {

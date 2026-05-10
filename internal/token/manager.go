@@ -614,6 +614,97 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 	return tokenToMap(t), false
 }
 
+// UpsertImportedCookie stores a Leonardo cookie imported by an external
+// automation, replacing the existing token for the same account when possible.
+func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID, source string, autoRefresh bool) (map[string]interface{}, bool, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, false, false, fmt.Errorf("token value is required")
+	}
+
+	tokenID := GenerateTokenID(value)
+	now := float64(time.Now().Unix())
+	accountEmail = strings.TrimSpace(accountEmail)
+	userID = strings.TrimSpace(userID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, t := range m.tokens {
+		if t.ID == tokenID || strings.TrimSpace(t.Value) == value {
+			t.Value = value
+			t.Status = "active"
+			t.Fails = 0
+			t.ErrorUntil = 0
+			if accountName != "" {
+				t.AccountName = accountName
+			}
+			if accountEmail != "" {
+				t.AccountEmail = accountEmail
+			}
+			if userID != "" {
+				t.AccountUserID = userID
+			}
+			if source != "" {
+				t.Source = source
+			}
+			t.AutoRefresh = autoRefresh
+			m.save()
+			return tokenToMap(t), false, true, nil
+		}
+	}
+
+	for _, t := range m.tokens {
+		if strings.ToLower(strings.TrimSpace(t.Platform)) != "leonardo" {
+			continue
+		}
+		sameUser := userID != "" && strings.TrimSpace(t.AccountUserID) == userID
+		sameEmail := accountEmail != "" && strings.EqualFold(strings.TrimSpace(t.AccountEmail), accountEmail)
+		if !sameUser && !sameEmail {
+			continue
+		}
+
+		t.ID = tokenID
+		t.Value = value
+		t.Status = "active"
+		t.Fails = 0
+		t.ErrorUntil = 0
+		t.SuccessCount = 0
+		if accountName != "" {
+			t.AccountName = accountName
+		}
+		if accountEmail != "" {
+			t.AccountEmail = accountEmail
+		}
+		if userID != "" {
+			t.AccountUserID = userID
+		}
+		if source != "" {
+			t.Source = source
+		}
+		t.AutoRefresh = autoRefresh
+		m.save()
+		return tokenToMap(t), true, false, nil
+	}
+
+	t := &Token{
+		ID:            tokenID,
+		Value:         value,
+		Platform:      "leonardo",
+		TokenType:     "session_token",
+		Status:        "active",
+		AddedAt:       now,
+		AccountName:   accountName,
+		AccountEmail:  accountEmail,
+		AccountUserID: userID,
+		Source:        source,
+		AutoRefresh:   autoRefresh,
+	}
+	m.tokens = append(m.tokens, t)
+	m.save()
+	return tokenToMap(t), false, false, nil
+}
+
 // SetAutoRefresh sets the auto_refresh flag for a token by ID.
 func (m *Manager) SetAutoRefresh(tokenID string, enabled bool) error {
 	m.mu.Lock()
