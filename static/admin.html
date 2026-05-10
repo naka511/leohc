@@ -144,6 +144,12 @@
             </div>
 
             <div class="form-group">
+              <label for="confCookieImportApiKey">Token 池导入密钥</label>
+              <input type="password" id="confCookieImportApiKey" class="input-text" placeholder="自动化程序导入 Cookie 时使用" />
+              <p class="help">自动化程序调用 /api/v1/tokens/import-cookie 时使用，支持 Bearer 或 X-Import-Key。</p>
+            </div>
+
+            <div class="form-group">
               <label for="confAdminUsername">管理员账号</label>
               <input type="text" id="confAdminUsername" class="input-text" placeholder="默认 admin" />
               <p class="help">管理后台登录账号。</p>

@@ -1020,6 +1020,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Config Management
   const confApiKey = document.getElementById("confApiKey");
+  const confCookieImportApiKey = document.getElementById("confCookieImportApiKey");
   const confAdminUsername = document.getElementById("confAdminUsername");
   const confAdminPassword = document.getElementById("confAdminPassword");
   const confPublicBaseUrl = document.getElementById("confPublicBaseUrl");
@@ -1144,6 +1145,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (res.ok) {
         const data = await res.json();
         confApiKey.value = data.api_key || "";
+        if (confCookieImportApiKey) {
+          confCookieImportApiKey.value = data.cookie_import_api_key || "";
+        }
         confAdminUsername.value = data.admin_username || "admin";
         confAdminPassword.value = data.admin_password || "admin";
         confPublicBaseUrl.value = data.public_base_url || "";
@@ -1204,6 +1208,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const payload = {
         ...currentData,
         api_key: confApiKey.value.trim(),
+        cookie_import_api_key: String(confCookieImportApiKey?.value || "").trim(),
         admin_username: confAdminUsername.value.trim() || "admin",
         admin_password: confAdminPassword.value || "admin",
         public_base_url: confPublicBaseUrl.value.trim(),
