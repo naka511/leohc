@@ -1377,21 +1377,6 @@ func (s *Server) HandleTokenCookieImport(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	maxItems := 50
-	if s.Config != nil {
-		maxItems = s.Config.GetInt("cookie_import_max_items", 50)
-	}
-	if maxItems < 1 {
-		maxItems = 50
-	}
-	if len(inputs) > maxItems {
-		writeJSON(w, 400, map[string]interface{}{
-			"detail":    "too many cookie items",
-			"max_items": maxItems,
-		})
-		return
-	}
-
 	autoRefresh := true
 	if body.AutoRefresh != nil {
 		autoRefresh = *body.AutoRefresh

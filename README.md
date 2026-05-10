@@ -139,7 +139,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/tokens/import-cookie \
 }
 ```
 
-默认单次最多导入 50 条，可通过 `cookie_import_max_items` 调整。导入成功后会校验 Cookie、更新账号邮箱、积分、过期时间，并默认开启 `auto_refresh`。如果识别到同一个 Leonardo 账号，会覆盖旧 Cookie，避免 Token 池产生同账号重复记录。
+批量导入不限制条数。导入成功后会校验 Cookie、更新账号邮箱、积分、过期时间，并默认开启 `auto_refresh`。如果识别到同一个 Leonardo 账号，会覆盖旧 Cookie，避免 Token 池产生同账号重复记录。
 
 响应示例：
 
