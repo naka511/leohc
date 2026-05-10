@@ -20,7 +20,8 @@ import (
 const (
 	generatedMediaFetchTimeout = 5 * time.Minute
 	maxGeneratedMediaBytes     = 500 << 20
-	imgBedUploadAttempts       = 2
+	imgBedUploadAttempts       = 3
+	localFetchRetryAttempts    = 3
 )
 
 type generatedMediaPayload struct {
@@ -63,7 +64,7 @@ func (s *Server) materializeGeneratedMedia(sourceURL, generationID, mediaKind st
 		}
 	}
 
-	payload, err := s.fetchGeneratedMediaPayload(sourceURL, generationID, mediaKind)
+	payload, err := s.fetchGeneratedMediaPayloadWithRetry(sourceURL, generationID, mediaKind)
 	if err != nil {
 		if useUpstream {
 			if !imgBedEnabled {
@@ -98,6 +99,38 @@ func (s *Server) materializeGeneratedMedia(sourceURL, generationID, mediaKind st
 		return "", err
 	}
 	return localURL, nil
+}
+
+func (s *Server) fetchGeneratedMediaPayloadWithRetry(sourceURL, generationID, mediaKind string) (*generatedMediaPayload, error) {
+	var lastErr error
+	for attempt := 1; attempt <= localFetchRetryAttempts; attempt++ {
+		payload, err := s.fetchGeneratedMediaPayload(sourceURL, generationID, mediaKind)
+		if err == nil {
+			return payload, nil
+		}
+		lastErr = err
+		if attempt < localFetchRetryAttempts && isRetryableGeneratedMediaFetchError(err) {
+			log.Printf("[generated] local fallback fetch attempt %d/%d failed for %s: %v; retrying", attempt, localFetchRetryAttempts, sourceURL, err)
+			continue
+		}
+		return nil, err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("generated media fetch failed")
+	}
+	return nil, lastErr
+}
+
+func isRetryableGeneratedMediaFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 func (s *Server) uploadGeneratedMediaToImgBedWithRetry(payload *generatedMediaPayload, apiURL, apiKey string) (string, error) {

@@ -69,7 +69,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   const enableAutoRefreshBatchBtn = document.getElementById("enableAutoRefreshBatchBtn");
   const disableAutoRefreshBatchBtn = document.getElementById("disableAutoRefreshBatchBtn");
   const refreshTokensBatchBtn = document.getElementById("refreshTokensBatchBtn");
-  const checkInvalidTokensBatchBtn = document.getElementById("checkInvalidTokensBatchBtn");
+  const cleanupInvalidTokensBtn = document.getElementById("cleanupInvalidTokensBtn");
+  const cleanupExhaustedTokensBtn = document.getElementById("cleanupExhaustedTokensBtn");
+  const cleanupConfirmModal = document.getElementById("cleanupConfirmModal");
+  const cleanupConfirmTitle = document.getElementById("cleanupConfirmTitle");
+  const cleanupConfirmCloseBtn = document.getElementById("cleanupConfirmCloseBtn");
+  const cleanupConfirmCountLabel = document.getElementById("cleanupConfirmCountLabel");
+  const cleanupConfirmMatchedCount = document.getElementById("cleanupConfirmMatchedCount");
+  const cleanupConfirmProfileCount = document.getElementById("cleanupConfirmProfileCount");
+  const cleanupConfirmDeleteBtn = document.getElementById("cleanupConfirmDeleteBtn");
+  const cleanupConfirmMsg = document.getElementById("cleanupConfirmMsg");
   const refreshModal = document.getElementById("refreshModal");
   const refreshModalCloseBtn = document.getElementById("refreshModalCloseBtn");
   const taskReportModal = document.getElementById("taskReportModal");
@@ -105,6 +114,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let latestTokenSummary = null;
   let latestTokenPagination = null;
   let activeTaskTracker = null;
+  let cleanupConfirmState = null;
   const TOKEN_PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500, 1000, 2000];
   const TOKEN_PAGE_SIZE_STORAGE_KEY = "leo-go.tokenPageSize";
   function readTokenPageSize() {
@@ -219,7 +229,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (enableAutoRefreshBatchBtn) enableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (disableAutoRefreshBatchBtn) disableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (refreshTokensBatchBtn) refreshTokensBatchBtn.disabled = selectedCount <= 0;
-    if (checkInvalidTokensBatchBtn) checkInvalidTokensBatchBtn.disabled = selectedCount <= 0;
     if (selectAllFilteredTokensBtn) {
       const filteredCount = Array.isArray(latestTokens) ? latestTokens.length : 0;
       selectAllFilteredTokensBtn.disabled = filteredCount <= 0 || selectedCount >= filteredCount;
@@ -596,6 +605,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (event.target === taskReportModal) closeDialog(taskReportModal);
     });
   }
+  if (cleanupConfirmCloseBtn) {
+    cleanupConfirmCloseBtn.addEventListener("click", () => closeDialog(cleanupConfirmModal));
+  }
+  if (cleanupConfirmModal) {
+    cleanupConfirmModal.addEventListener("click", (event) => {
+      if (event.target === cleanupConfirmModal) closeDialog(cleanupConfirmModal);
+    });
+  }
 
   window.deleteToken = async (id) => {
     if (!confirm("确定要删除这个 Token 吗？")) return;
@@ -848,50 +865,86 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  if (checkInvalidTokensBatchBtn) {
-    checkInvalidTokensBatchBtn.addEventListener("click", async () => {
-      const selectedIds = Array.from(tokenSelectedIds);
-      if (!selectedIds.length) {
-        alert("请先选择要检测的 Token");
-        return;
-      }
-      const ok = confirm(
-        `将主动检测选中的 ${selectedIds.length} 个 Token。明确返回 Token invalid or expired 时会标记为已失效；检测到本地异常或 403 时会标记为异常并关闭自动刷新。确定继续吗？`
-      );
-      if (!ok) return;
+  async function countTokensForCleanup(status) {
+    const params = new URLSearchParams({ status, page: "1", page_size: "1" });
+    const res = await fetch(`/api/v1/tokens?${params.toString()}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.detail || "获取待清理数量失败");
+    }
+    return Number(data?.pagination?.total ?? data?.summary?.filtered ?? 0) || 0;
+  }
 
-      checkInvalidTokensBatchBtn.disabled = true;
-      showToast("正在检测 Token 状态...", false, { duration: 0 });
-      try {
-        const res = await fetch("/api/v1/tokens/check-invalid-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: selectedIds }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data?.detail || "检测 Token 状态失败");
-        }
-        const invalid = Number(data.invalid_count || 0);
-        const changed = Number(data.changed_count || 0);
-        const valid = Number(data.valid_count || 0);
-        const abnormal = Number(data.abnormal_count || 0);
-        const abnormalChanged = Number(data.abnormal_changed_count || 0);
-        const skipped = Number(data.skipped_count || 0);
-        const failed = Number(data.failed_count || 0);
-        const disabled = Number(data.disabled_auto_refresh_count || 0);
-        showToast(
-          `检测完成：已失效 ${invalid}，新失效 ${changed}，异常 ${abnormal}，新异常 ${abnormalChanged}，正常 ${valid}，关闭自动刷新 ${disabled}，跳过 ${skipped}，失败 ${failed}`,
-          failed > 0,
-          { duration: 8000 }
-        );
-        await loadTokens();
-      } catch (err) {
-        showToast(err.message || "检测 Token 状态失败", true, { duration: 8000 });
-      } finally {
-        checkInvalidTokensBatchBtn.disabled = false;
-        updateTokenSelectionSummary();
+  async function openCleanupConfirm(status, label, btn) {
+    if (btn) btn.disabled = true;
+    if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = "正在统计...";
+    try {
+      const count = await countTokensForCleanup(status);
+      cleanupConfirmState = { status, label, sourceButton: btn };
+      if (cleanupConfirmTitle) cleanupConfirmTitle.textContent = `清理${label}`;
+      if (cleanupConfirmCountLabel) cleanupConfirmCountLabel.textContent = `${label} Token`;
+      if (cleanupConfirmMatchedCount) cleanupConfirmMatchedCount.textContent = String(count);
+      if (cleanupConfirmProfileCount) cleanupConfirmProfileCount.textContent = String(count);
+      if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = count <= 0;
+      if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = count > 0 ? "" : `没有可清理的${label} Token`;
+      openDialog(cleanupConfirmModal);
+    } catch (err) {
+      showToast(err.message || `统计${label} Token 失败`, true, { duration: 8000 });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function runCleanupFromConfirm() {
+    if (!cleanupConfirmState) return;
+    const { status, label, sourceButton } = cleanupConfirmState;
+    if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = true;
+    if (sourceButton) sourceButton.disabled = true;
+    if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = "正在删除...";
+    showToast(`正在清理${label} Token...`, false, { duration: 0 });
+    try {
+      const res = await fetch("/api/v1/tokens/cleanup-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.detail || `清理${label} Token 失败`);
       }
+      const deleted = Number(data.deleted_count || 0);
+      const failed = Number(data.failed_count || 0);
+      showToast(
+        `清理${label} Token 完成：删除 ${deleted} 个，失败 ${failed} 个`,
+        failed > 0,
+        { duration: 7000 }
+      );
+      tokenSelectedIds.clear();
+      closeDialog(cleanupConfirmModal);
+      await loadTokens();
+    } catch (err) {
+      if (cleanupConfirmMsg) cleanupConfirmMsg.textContent = err.message || `清理${label} Token 失败`;
+      showToast(err.message || `清理${label} Token 失败`, true, { duration: 8000 });
+    } finally {
+      if (cleanupConfirmDeleteBtn) cleanupConfirmDeleteBtn.disabled = false;
+      if (sourceButton) sourceButton.disabled = false;
+      updateTokenSelectionSummary();
+    }
+  }
+
+  if (cleanupConfirmDeleteBtn) {
+    cleanupConfirmDeleteBtn.addEventListener("click", runCleanupFromConfirm);
+  }
+
+  if (cleanupInvalidTokensBtn) {
+    cleanupInvalidTokensBtn.addEventListener("click", () => {
+      openCleanupConfirm("invalid", "已失效", cleanupInvalidTokensBtn);
+    });
+  }
+
+  if (cleanupExhaustedTokensBtn) {
+    cleanupExhaustedTokensBtn.addEventListener("click", () => {
+      openCleanupConfirm("exhausted", "额度耗尽", cleanupExhaustedTokensBtn);
     });
   }
 
@@ -1020,6 +1073,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Config Management
   const confApiKey = document.getElementById("confApiKey");
+  const confCookieImportApiKey = document.getElementById("confCookieImportApiKey");
   const confAdminUsername = document.getElementById("confAdminUsername");
   const confAdminPassword = document.getElementById("confAdminPassword");
   const confPublicBaseUrl = document.getElementById("confPublicBaseUrl");
@@ -1144,6 +1198,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (res.ok) {
         const data = await res.json();
         confApiKey.value = data.api_key || "";
+        if (confCookieImportApiKey) {
+          confCookieImportApiKey.value = data.cookie_import_api_key || "";
+        }
         confAdminUsername.value = data.admin_username || "admin";
         confAdminPassword.value = data.admin_password || "admin";
         confPublicBaseUrl.value = data.public_base_url || "";
@@ -1204,6 +1261,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const payload = {
         ...currentData,
         api_key: confApiKey.value.trim(),
+        cookie_import_api_key: String(confCookieImportApiKey?.value || "").trim(),
         admin_username: confAdminUsername.value.trim() || "admin",
         admin_password: confAdminPassword.value || "admin",
         public_base_url: confPublicBaseUrl.value.trim(),

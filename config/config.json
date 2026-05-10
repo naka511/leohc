@@ -3,6 +3,7 @@
   "admin_session_secret": "leo-go-session-secret",
   "admin_username": "admin",
   "api_key": "chf658h757hg76",
+  "cookie_import_api_key": "LeoGoCookieImport@2026!",
   "batch_concurrency": 5,
   "generate_timeout": 300,
   "generated_max_size_mb": 1024,

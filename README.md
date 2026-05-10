@@ -74,6 +74,100 @@ docker compose up -d
 - 用户名：`admin`
 - 密码：`admin`
 
+## 自动化 Cookie 导入接口
+
+用于把自动化程序获取到的 Leonardo Cookie 导入到 Token 池。自动化程序只需要知道服务地址和 Token 池导入密钥，不需要管理员账号密码。
+
+导入密钥在后台 `系统配置 -> 账号与安全 -> Token 池导入密钥` 中设置，对应配置项为 `cookie_import_api_key`。
+
+接口：
+
+```text
+POST /api/v1/tokens/import-cookie
+```
+
+鉴权支持两种写法，任选一种：
+
+```http
+Authorization: Bearer YOUR_COOKIE_IMPORT_API_KEY
+```
+
+```http
+X-Import-Key: YOUR_COOKIE_IMPORT_API_KEY
+```
+
+### 单个导入
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/tokens/import-cookie \
+  -H "Authorization: Bearer YOUR_COOKIE_IMPORT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "account@example.com",
+    "cookie": "__Secure-better-auth.session_token=...; ..."
+  }'
+```
+
+### 批量导入
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/tokens/import-cookie \
+  -H "Authorization: Bearer YOUR_COOKIE_IMPORT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+      {
+        "name": "account-a@example.com",
+        "cookie": "__Secure-better-auth.session_token=...; ..."
+      },
+      {
+        "name": "account-b@example.com",
+        "cookie": "__Secure-better-auth.session_token=...; ..."
+      }
+    ]
+  }'
+```
+
+也支持只传 Cookie 字符串数组：
+
+```json
+{
+  "cookies": [
+    "__Secure-better-auth.session_token=...; ...",
+    "__Secure-better-auth.session_token=...; ..."
+  ]
+}
+```
+
+批量导入不限制条数。导入成功后会校验 Cookie、更新账号邮箱、积分、过期时间，并默认开启 `auto_refresh`。如果识别到同一个 Leonardo 账号，会覆盖旧 Cookie，避免 Token 池产生同账号重复记录。
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "total": 1,
+  "success_count": 1,
+  "failed_count": 0,
+  "duplicate_count": 0,
+  "overwritten_count": 0,
+  "items": [
+    {
+      "index": 0,
+      "status": "active",
+      "detail": "imported",
+      "token_id": "5UNuopWd",
+      "token_account_email": "account@example.com",
+      "credits": 8500,
+      "overwritten": false,
+      "duplicate": false
+    }
+  ]
+}
+```
+
+接口响应不会回显原始 Cookie。
+
 ## OpenAI 兼容调用
 
 ### 1. 查询模型
