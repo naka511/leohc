@@ -121,6 +121,7 @@ func main() {
 	mux.HandleFunc("/api/v1/tokens/export", srv.HandleTokenExport)
 	mux.HandleFunc("/api/v1/tokens/auto-refresh-batch", srv.HandleTokenAutoRefreshBatch)
 	mux.HandleFunc("/api/v1/tokens/refresh-batch", srv.HandleTokenRefreshBatch)
+	mux.HandleFunc("/api/v1/tokens/cleanup-status", srv.HandleTokenCleanupStatus)
 	mux.HandleFunc("/api/v1/tokens/check-invalid-batch", srv.HandleCheckInvalidTokensBatch)
 	mux.HandleFunc("/api/v1/tokens/import-cookie", srv.HandleTokenCookieImport)
 

@@ -591,6 +591,74 @@ func (s *Server) HandleDeleteBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleTokenCleanupStatus deletes every token matching a cleanup bucket.
+func (s *Server) HandleTokenCleanupStatus(w http.ResponseWriter, r *http.Request) {
+	if err := s.requireAdmin(r); err != nil {
+		writeJSON(w, 401, map[string]string{"detail": "unauthorized"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
+		return
+	}
+
+	status := strings.ToLower(strings.TrimSpace(body.Status))
+	if status != "invalid" && status != "exhausted" {
+		writeJSON(w, 400, map[string]string{"detail": "status must be invalid or exhausted"})
+		return
+	}
+
+	now := float64(time.Now().Unix())
+	tokens := s.TokenMgr.ListFull()
+	ids := make([]string, 0, len(tokens))
+	for _, info := range tokens {
+		tokenID := strings.TrimSpace(toString(info["id"]))
+		if tokenID == "" {
+			continue
+		}
+		tokenStatus := strings.ToLower(strings.TrimSpace(toString(info["status"])))
+		expiresAt := toFloat64(info["expires_at"])
+
+		switch status {
+		case "invalid":
+			if tokenStatus == "invalid" || (expiresAt > 0 && now >= expiresAt) {
+				ids = append(ids, tokenID)
+			}
+		case "exhausted":
+			if tokenStatus == "exhausted" {
+				ids = append(ids, tokenID)
+			}
+		}
+	}
+
+	deletedIDs := make([]string, 0, len(ids))
+	failed := 0
+	for _, id := range ids {
+		if err := s.TokenMgr.Remove(id); err != nil {
+			failed++
+			continue
+		}
+		deletedIDs = append(deletedIDs, id)
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":            failed == 0,
+		"status":        status,
+		"matched_count": len(ids),
+		"deleted_count": len(deletedIDs),
+		"failed_count":  failed,
+		"deleted_ids":   deletedIDs,
+	})
+}
+
 // HandleTokenStatusBatch handles POST /api/v1/tokens/status-batch.
 func (s *Server) HandleTokenStatusBatch(w http.ResponseWriter, r *http.Request) {
 	if err := s.requireAdmin(r); err != nil {

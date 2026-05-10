@@ -69,7 +69,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const enableAutoRefreshBatchBtn = document.getElementById("enableAutoRefreshBatchBtn");
   const disableAutoRefreshBatchBtn = document.getElementById("disableAutoRefreshBatchBtn");
   const refreshTokensBatchBtn = document.getElementById("refreshTokensBatchBtn");
-  const checkInvalidTokensBatchBtn = document.getElementById("checkInvalidTokensBatchBtn");
+  const cleanupInvalidTokensBtn = document.getElementById("cleanupInvalidTokensBtn");
+  const cleanupExhaustedTokensBtn = document.getElementById("cleanupExhaustedTokensBtn");
   const refreshModal = document.getElementById("refreshModal");
   const refreshModalCloseBtn = document.getElementById("refreshModalCloseBtn");
   const taskReportModal = document.getElementById("taskReportModal");
@@ -219,7 +220,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (enableAutoRefreshBatchBtn) enableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (disableAutoRefreshBatchBtn) disableAutoRefreshBatchBtn.disabled = selectedCount <= 0;
     if (refreshTokensBatchBtn) refreshTokensBatchBtn.disabled = selectedCount <= 0;
-    if (checkInvalidTokensBatchBtn) checkInvalidTokensBatchBtn.disabled = selectedCount <= 0;
     if (selectAllFilteredTokensBtn) {
       const filteredCount = Array.isArray(latestTokens) ? latestTokens.length : 0;
       selectAllFilteredTokensBtn.disabled = filteredCount <= 0 || selectedCount >= filteredCount;
@@ -848,50 +848,48 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  if (checkInvalidTokensBatchBtn) {
-    checkInvalidTokensBatchBtn.addEventListener("click", async () => {
-      const selectedIds = Array.from(tokenSelectedIds);
-      if (!selectedIds.length) {
-        alert("请先选择要检测的 Token");
-        return;
-      }
-      const ok = confirm(
-        `将主动检测选中的 ${selectedIds.length} 个 Token。明确返回 Token invalid or expired 时会标记为已失效；检测到本地异常或 403 时会标记为异常并关闭自动刷新。确定继续吗？`
-      );
-      if (!ok) return;
+  async function cleanupTokensByStatus(status, label, btn) {
+    const ok = confirm(`确定要清理所有${label} Token 吗？此操作会直接删除符合条件的账号。`);
+    if (!ok) return;
 
-      checkInvalidTokensBatchBtn.disabled = true;
-      showToast("正在检测 Token 状态...", false, { duration: 0 });
-      try {
-        const res = await fetch("/api/v1/tokens/check-invalid-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: selectedIds }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data?.detail || "检测 Token 状态失败");
-        }
-        const invalid = Number(data.invalid_count || 0);
-        const changed = Number(data.changed_count || 0);
-        const valid = Number(data.valid_count || 0);
-        const abnormal = Number(data.abnormal_count || 0);
-        const abnormalChanged = Number(data.abnormal_changed_count || 0);
-        const skipped = Number(data.skipped_count || 0);
-        const failed = Number(data.failed_count || 0);
-        const disabled = Number(data.disabled_auto_refresh_count || 0);
-        showToast(
-          `检测完成：已失效 ${invalid}，新失效 ${changed}，异常 ${abnormal}，新异常 ${abnormalChanged}，正常 ${valid}，关闭自动刷新 ${disabled}，跳过 ${skipped}，失败 ${failed}`,
-          failed > 0,
-          { duration: 8000 }
-        );
-        await loadTokens();
-      } catch (err) {
-        showToast(err.message || "检测 Token 状态失败", true, { duration: 8000 });
-      } finally {
-        checkInvalidTokensBatchBtn.disabled = false;
-        updateTokenSelectionSummary();
+    if (btn) btn.disabled = true;
+    showToast(`正在清理${label} Token...`, false, { duration: 0 });
+    try {
+      const res = await fetch("/api/v1/tokens/cleanup-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.detail || `清理${label} Token 失败`);
       }
+      const deleted = Number(data.deleted_count || 0);
+      const failed = Number(data.failed_count || 0);
+      showToast(
+        `清理${label} Token 完成：删除 ${deleted} 个，失败 ${failed} 个`,
+        failed > 0,
+        { duration: 7000 }
+      );
+      tokenSelectedIds.clear();
+      await loadTokens();
+    } catch (err) {
+      showToast(err.message || `清理${label} Token 失败`, true, { duration: 8000 });
+    } finally {
+      if (btn) btn.disabled = false;
+      updateTokenSelectionSummary();
+    }
+  }
+
+  if (cleanupInvalidTokensBtn) {
+    cleanupInvalidTokensBtn.addEventListener("click", () => {
+      cleanupTokensByStatus("invalid", "已失效", cleanupInvalidTokensBtn);
+    });
+  }
+
+  if (cleanupExhaustedTokensBtn) {
+    cleanupExhaustedTokensBtn.addEventListener("click", () => {
+      cleanupTokensByStatus("exhausted", "额度耗尽", cleanupExhaustedTokensBtn);
     });
   }
 
