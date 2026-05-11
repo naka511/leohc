@@ -800,7 +800,7 @@ func (t *Token) seedanceSlotsExhausted() bool {
 	if t == nil {
 		return false
 	}
-	return t.SeedanceFastCount >= 2 || (t.SeedanceStdCount >= 1 && t.SeedanceFastCount >= 1)
+	return (t.SeedanceStdCount + t.SeedanceFastCount) >= 2
 }
 
 // ---- serialization helpers ----

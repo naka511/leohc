@@ -281,6 +281,29 @@ func (s *Store) Running() []Entry {
 	return result
 }
 
+// RunningCountByToken returns the number of IN_PROGRESS entries for a token.
+func (s *Store) RunningCountByToken(tokenID string) int {
+	tokenID = strings.TrimSpace(tokenID)
+	if s == nil || tokenID == "" {
+		return 0
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for _, e := range s.entries {
+		if normalizeTaskStatus(e.TaskStatus) != "IN_PROGRESS" {
+			continue
+		}
+		if strings.TrimSpace(e.TokenID) != tokenID {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // ExpireStaleRunning marks long-running IN_PROGRESS entries as FAILED/504.
 func (s *Store) ExpireStaleRunning(timeout time.Duration, now time.Time) int {
 	if timeout <= 0 {
