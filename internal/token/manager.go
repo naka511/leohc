@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ func (m *Manager) load() {
 			m.tokens = append(m.tokens, t)
 		}
 	}
+	m.sortByImportOrderLocked()
 	log.Printf("[token_mgr] loaded %d tokens", len(m.tokens))
 }
 
@@ -80,6 +82,7 @@ func (m *Manager) save() {
 	if m.store == nil {
 		return
 	}
+	m.sortByImportOrderLocked()
 	var rows []map[string]interface{}
 	for _, t := range m.tokens {
 		rows = append(rows, tokenToMap(t))
@@ -87,6 +90,32 @@ func (m *Manager) save() {
 	if err := m.store.ReplaceTokens(rows); err != nil {
 		log.Printf("[token_mgr] failed to save tokens: %v", err)
 	}
+}
+
+func (m *Manager) sortByImportOrderLocked() {
+	sort.SliceStable(m.tokens, func(i, j int) bool {
+		left := m.tokens[i]
+		right := m.tokens[j]
+		if left == nil || right == nil {
+			return right != nil
+		}
+		leftAdded := left.AddedAt
+		rightAdded := right.AddedAt
+		if leftAdded <= 0 && rightAdded > 0 {
+			return true
+		}
+		if leftAdded > 0 && rightAdded <= 0 {
+			return false
+		}
+		if leftAdded > 0 && rightAdded > 0 && leftAdded != rightAdded {
+			return leftAdded < rightAdded
+		}
+		return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
+	})
+}
+
+func currentTimestamp() float64 {
+	return float64(time.Now().UnixNano()) / float64(time.Second)
 }
 
 // TokenValueHash returns a short hash of a token value for dedup.
@@ -150,7 +179,7 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 		}
 	}
 
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 	t := &Token{
 		ID:           tokenID,
 		Value:        value,
@@ -205,7 +234,7 @@ func (m *Manager) GetAvailable(strategy string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
 		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
@@ -239,7 +268,7 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
 		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
@@ -270,7 +299,7 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
 		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
@@ -478,7 +507,7 @@ func (m *Manager) Stats() map[string]interface{} {
 	exhausted := 0
 	disabled := 0
 	autoRefresh := 0
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 
 	for _, t := range m.tokens {
 		switch t.Status {
@@ -537,7 +566,7 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 	}
 
 	tokenID := GenerateTokenID(value)
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -623,7 +652,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 	}
 
 	tokenID := GenerateTokenID(value)
-	now := float64(time.Now().Unix())
+	now := currentTimestamp()
 	accountEmail = strings.TrimSpace(accountEmail)
 	userID = strings.TrimSpace(userID)
 
