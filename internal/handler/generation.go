@@ -621,12 +621,16 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 	result, err := s.LeonardoClient.Generate(session, genReq)
 	if err != nil {
 		statusCode := statusCodeFromGenerationError(err)
+		insufficientTokens := isInsufficientTokensMessage(err.Error())
+		if insufficientTokens {
+			s.markTokenExhausted(usedTokenID, err.Error())
+		}
 		return nil, &videoGenerationAttemptFailure{
 			StatusCode:      statusCode,
 			Message:         fmt.Sprintf("generation failed: %v", err),
 			ErrorType:       "server_error",
 			RetryCodeSource: extractRetryCodeSource(err.Error()),
-			MarkInvalid:     !isRetryableGenerationError(err),
+			MarkInvalid:     !insufficientTokens && !isRetryableGenerationError(err),
 		}
 	}
 	s.applyTokenCreditCost(usedTokenID, result.APICreditCost)
@@ -677,6 +681,9 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 				log.Printf("[Leonardo] failed to fetch generation failure reason for %s: %v", generationID, reasonErr)
 			} else if strings.TrimSpace(reason) != "" {
 				failureMessage = strings.TrimSpace(reason)
+			}
+			if isInsufficientTokensMessage(failureMessage) {
+				s.markTokenExhausted(usedTokenID, failureMessage)
 			}
 			if s.ReqLog != nil {
 				s.ReqLog.UpdateByGenerationID(generationID, "FAILED", 502, "", "", failureMessage)

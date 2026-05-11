@@ -2245,6 +2245,9 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	accountName, accountEmail := s.resolveReqLogAccount(usedTokenID, session)
 
 	if err != nil {
+		if isInsufficientTokensMessage(err.Error()) {
+			s.markTokenExhausted(usedTokenID, err.Error())
+		}
 		// Log failed request
 		if s.ReqLog != nil {
 			s.ReqLog.Add(reqlog.Entry{
@@ -2398,8 +2401,17 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else if status.Status == "FAILED" {
+		failureMessage := "generation status FAILED"
+		if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, genID); reasonErr != nil {
+			log.Printf("[status] failed to fetch generation failure reason for %s: %v", genID, reasonErr)
+		} else if strings.TrimSpace(reason) != "" {
+			failureMessage = strings.TrimSpace(reason)
+		}
+		if isInsufficientTokensMessage(failureMessage) {
+			s.markTokenExhausted(tokenID, failureMessage)
+		}
 		if s.ReqLog != nil {
-			s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "generation status FAILED")
+			s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", failureMessage)
 		}
 	}
 
@@ -3065,8 +3077,17 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 
 		case "FAILED":
 			log.Printf("[poll] generation %s failed (%.1fs)", genID, elapsed)
+			failureMessage := "generation status FAILED"
+			if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, genID); reasonErr != nil {
+				log.Printf("[poll] failed to fetch generation failure reason for %s: %v", genID, reasonErr)
+			} else if strings.TrimSpace(reason) != "" {
+				failureMessage = strings.TrimSpace(reason)
+			}
+			if isInsufficientTokensMessage(failureMessage) {
+				s.markTokenExhausted(tokenID, failureMessage)
+			}
 			if s.ReqLog != nil {
-				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", "generation status FAILED")
+				s.ReqLog.UpdateByGenerationID(genID, "FAILED", 502, "", "", failureMessage)
 				s.ReqLog.UpdateDuration(genID, elapsed)
 			}
 			s.refreshTokenCredits(tokenID, session)
@@ -3098,6 +3119,32 @@ func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSess
 		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		log.Printf("[poll] refreshed credits for token %s: %d remaining", tokenID, credits.TotalTokens)
 	}
+}
+
+func isInsufficientTokensMessage(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return false
+	}
+	normalized := normalizeRetryMatcher(raw)
+	return strings.Contains(raw, "insufficient tokens") ||
+		strings.Contains(raw, "insufficient_tokens") ||
+		strings.Contains(normalized, "insufficient_tokens")
+}
+
+func (s *Server) markTokenExhausted(tokenID string, reason string) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" || s == nil || s.TokenMgr == nil {
+		return
+	}
+	if err := s.TokenMgr.SetStatus(tokenID, "exhausted"); err != nil {
+		log.Printf("[token] failed to mark token exhausted %s: %v", tokenID, err)
+		return
+	}
+	if err := s.TokenMgr.SetAutoRefresh(tokenID, false); err != nil {
+		log.Printf("[token] failed to disable auto-refresh for exhausted token %s: %v", tokenID, err)
+	}
+	log.Printf("[token] marked token exhausted %s: %s", tokenID, strings.TrimSpace(reason))
 }
 
 // applyTokenCreditCost updates the local token balance immediately after
