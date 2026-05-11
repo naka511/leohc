@@ -693,6 +693,10 @@ type GeneratedImage struct {
 	MotionGIF string `json:"motionGIFURL"`
 }
 
+func inferResolutionMode(width int, height int) string {
+	return "RESOLUTION_720"
+}
+
 // doGraphQL sends a GraphQL request and returns the raw response body.
 func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	reqBody, err := json.Marshal(gqlReq)
@@ -741,21 +745,21 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	jwt := session.JWT
 	session.mu.RUnlock()
 
+	if genReq.Params.Width == 0 {
+		genReq.Params.Width = 1280
+	}
+	if genReq.Params.Height == 0 {
+		genReq.Params.Height = 720
+	}
 	// Set defaults
 	if genReq.Params.Mode == "" {
-		genReq.Params.Mode = "RESOLUTION_720"
+		genReq.Params.Mode = inferResolutionMode(genReq.Params.Width, genReq.Params.Height)
 	}
 	if genReq.Params.Quantity == 0 {
 		genReq.Params.Quantity = 1
 	}
 	if genReq.Params.Duration == 0 {
 		genReq.Params.Duration = 4
-	}
-	if genReq.Params.Width == 0 {
-		genReq.Params.Width = 1280
-	}
-	if genReq.Params.Height == 0 {
-		genReq.Params.Height = 720
 	}
 	if genReq.Params.Seed == 0 {
 		genReq.Params.Seed = -1

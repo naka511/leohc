@@ -25,7 +25,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		"aliases":     []string{"seedance-2.0"},
 		"parameters": map[string]interface{}{
 			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-			"size":     []string{"1280x720", "720x1280", "720x720"},
+			"size":     []string{"1280x720", "720x1280", "960x960"},
 		},
 	},
 	{
@@ -36,7 +36,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		"aliases":     []string{"seedance-2.0-fast"},
 		"parameters": map[string]interface{}{
 			"duration": []int{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
-			"size":     []string{"1280x720", "720x1280", "720x720"},
+			"size":     []string{"1280x720", "720x1280", "960x960"},
 		},
 	},
 }
@@ -586,6 +586,10 @@ func publicVideoModelID(modelID string) string {
 	}
 }
 
+func leonardoVideoResolutionMode(width int, height int) string {
+	return "RESOLUTION_720"
+}
+
 func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSubmission, *videoGenerationAttemptFailure) {
 	if s.LeonardoClient == nil {
 		return nil, &videoGenerationAttemptFailure{
@@ -601,7 +605,7 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 		Public: true,
 		Params: leonardo.GenerateParams{
 			Prompt:         prompt,
-			Mode:           "RESOLUTION_720",
+			Mode:           leonardoVideoResolutionMode(width, height),
 			Duration:       duration,
 			Width:          width,
 			Height:         height,

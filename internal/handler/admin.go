@@ -3147,6 +3147,19 @@ func (s *Server) reportSeedanceGenerationSuccess(tokenID string, modelID string)
 	}
 }
 
+func (s *Server) tokenRunningGenerationCount(tokenID string) int {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" || s == nil || s.ReqLog == nil {
+		return 0
+	}
+	s.expireStaleRunningLogs()
+	return s.ReqLog.RunningCountByToken(tokenID)
+}
+
+func (s *Server) tokenCanAcceptMoreRunningTasks(tokenID string) bool {
+	return s.tokenRunningGenerationCount(tokenID) < 2
+}
+
 func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string]bool) (*leonardo.TokenSession, string) {
 	return s.getLeonardoSessionForModelExcluding(tokenID, excluded, "")
 }
@@ -3154,6 +3167,9 @@ func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string
 func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded map[string]bool, modelID string) (*leonardo.TokenSession, string) {
 	if tokenID != "" {
 		if excluded != nil && excluded[tokenID] {
+			return nil, ""
+		}
+		if !s.tokenCanAcceptMoreRunningTasks(tokenID) {
 			return nil, ""
 		}
 		return s.getLeonardoSessionForModel(tokenID, modelID)
@@ -3184,6 +3200,9 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 			continue
 		}
 		tried[foundID] = true
+		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
+			continue
+		}
 		if !s.seedanceTokenCanRunModel(info, modelID) {
 			continue
 		}
@@ -3216,6 +3235,9 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 	if tokenID != "" {
 		info := s.TokenMgr.GetByID(tokenID)
 		if info == nil {
+			return nil, ""
+		}
+		if !s.tokenCanAcceptMoreRunningTasks(tokenID) {
 			return nil, ""
 		}
 		if isExpiredTokenInfo(info) {
@@ -3264,6 +3286,9 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 			continue
 		}
 		tried[foundID] = true
+		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
+			continue
+		}
 		if !s.seedanceTokenCanRunModel(info, modelID) {
 			continue
 		}
