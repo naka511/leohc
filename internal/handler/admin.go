@@ -923,6 +923,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" {
 		all := s.Config.GetAll()
+		all["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(all["leonardo_upload_proxy_mode"]))
+		all["leonardo_upload_proxy"] = strings.TrimSpace(toString(all["leonardo_upload_proxy"]))
 		// Mask sensitive values
 		if _, ok := all["admin_password"]; ok {
 			all["admin_password"] = "***"
@@ -946,6 +948,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	if rawPwd, ok := updates["admin_password"].(string); ok && strings.TrimSpace(rawPwd) == "***" {
 		updates["admin_password"] = s.Config.GetString("admin_password", "admin")
 	}
+	updates["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(updates["leonardo_upload_proxy_mode"]))
+	updates["leonardo_upload_proxy"] = strings.TrimSpace(toString(updates["leonardo_upload_proxy"]))
 	delete(updates, "generated_usage_mb")
 	delete(updates, "generated_usage_bytes")
 	delete(updates, "generated_file_count")
@@ -967,6 +971,15 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		resp["generated_usage_error"] = statsErr.Error()
 	}
 	writeJSON(w, 200, resp)
+}
+
+func normalizeLeonardoUploadProxyMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "basic", "direct", "custom":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "basic"
+	}
 }
 
 // HandleProxyTest handles POST /api/v1/proxy/test using the current form values.
