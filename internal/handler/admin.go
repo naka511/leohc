@@ -2057,9 +2057,10 @@ var startTime = time.Now()
 const (
 	maxRemoteImageBytes     = 20 << 20
 	maxRemoteVideoBytes     = 100 << 20
-	remoteImageFetchTimeout = 120 * time.Second
-	initImageLookupTimeout  = 180 * time.Second
-	remoteFetchMaxAttempts  = 2
+	remoteImageFetchTimeout = 300 * time.Second
+	remoteVideoFetchTimeout = 500 * time.Second
+	initImageLookupTimeout  = 500 * time.Second
+	remoteFetchMaxAttempts  = 3
 )
 
 func extractPathParam(path, prefix string) string {
@@ -2780,7 +2781,7 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 		parsedURL.RawPath = parsedURL.EscapedPath()
 	}
 
-	httpClient, err := s.newResourceHTTPClient(remoteImageFetchTimeout)
+	httpClient, err := s.newResourceHTTPClient(remoteVideoFetchTimeout)
 	if err != nil {
 		return nil, "", "", 0, err
 	}

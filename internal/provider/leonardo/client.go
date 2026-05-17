@@ -30,12 +30,14 @@ const (
 )
 
 const (
-	defaultClientTimeout  = 120 * time.Second
-	defaultInitWait       = 180 * time.Second
-	s3UploadMaxAttempts   = 3
-	s3UploadRetryDelay    = 2 * time.Second
-	uploadInitMaxAttempts = 3
-	uploadInitRetryDelay  = 2 * time.Second
+	defaultClientTimeout   = 120 * time.Second
+	uploadInitTimeout      = 300 * time.Second
+	s3UploadRequestTimeout = 500 * time.Second
+	defaultInitWait        = 180 * time.Second
+	s3UploadMaxAttempts    = 3
+	s3UploadRetryDelay     = 2 * time.Second
+	uploadInitMaxAttempts  = 3
+	uploadInitRetryDelay   = 2 * time.Second
 )
 
 const defaultJWTRefreshMargin = 5 * time.Minute
@@ -84,23 +86,27 @@ type Credits struct {
 
 // Client manages Leonardo API interactions.
 type Client struct {
-	httpClient       *http.Client
-	uploadHTTPClient *http.Client
-	proxy            string
-	uploadProxyMode  string
-	uploadProxy      string
-	jwtRefreshMargin time.Duration
+	httpClient           *http.Client
+	uploadInitHTTPClient *http.Client
+	uploadHTTPClient     *http.Client
+	proxy                string
+	uploadProxyMode      string
+	uploadProxy          string
+	jwtRefreshMargin     time.Duration
 }
 
 // NewClient creates a new Leonardo client.
 func NewClient(proxy string) *Client {
 	httpClient, _ := newLeonardoHTTPClient(proxy, defaultClientTimeout)
+	uploadInitHTTPClient, _ := newLeonardoHTTPClient(proxy, uploadInitTimeout)
+	uploadHTTPClient, _ := newLeonardoHTTPClient(proxy, s3UploadRequestTimeout)
 	return &Client{
-		httpClient:       httpClient,
-		uploadHTTPClient: httpClient,
-		proxy:            proxy,
-		uploadProxyMode:  "basic",
-		jwtRefreshMargin: defaultJWTRefreshMargin,
+		httpClient:           httpClient,
+		uploadInitHTTPClient: uploadInitHTTPClient,
+		uploadHTTPClient:     uploadHTTPClient,
+		proxy:                proxy,
+		uploadProxyMode:      "basic",
+		jwtRefreshMargin:     defaultJWTRefreshMargin,
 	}
 }
 
@@ -135,11 +141,11 @@ func (c *Client) SetUploadProxyConfig(mode string, proxy string) error {
 	)
 	switch mode {
 	case "basic":
-		uploadClient, err = newLeonardoHTTPClient(c.proxy, defaultClientTimeout)
+		uploadClient, err = newLeonardoHTTPClient(c.proxy, s3UploadRequestTimeout)
 	case "direct":
-		uploadClient, err = newLeonardoHTTPClient("", defaultClientTimeout)
+		uploadClient, err = newLeonardoHTTPClient("", s3UploadRequestTimeout)
 	case "custom":
-		uploadClient, err = newLeonardoHTTPClient(proxy, defaultClientTimeout)
+		uploadClient, err = newLeonardoHTTPClient(proxy, s3UploadRequestTimeout)
 	default:
 		return fmt.Errorf("unsupported upload proxy mode: %s", mode)
 	}
@@ -745,6 +751,10 @@ func inferResolutionMode(width int, height int) string {
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
 func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
+	return c.doGraphQLWithClient(c.httpClient, jwt, gqlReq)
+}
+
+func (c *Client) doGraphQLWithClient(client *http.Client, jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	reqBody, err := json.Marshal(gqlReq)
 	if err != nil {
 		return nil, err
@@ -763,7 +773,10 @@ func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 	req.Header.Set("X-Leo-Schema-Version", "latest")
 
-	resp, err := c.httpClient.Do(req)
+	if client == nil {
+		client = c.httpClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("graphql request failed: %w", err)
 	}
@@ -1496,7 +1509,7 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 	}
 
 	for attempt := 1; attempt <= uploadInitMaxAttempts; attempt++ {
-		body, err := c.doGraphQL(jwt, gqlReq)
+		body, err := c.doGraphQLWithClient(c.uploadInitHTTPClient, jwt, gqlReq)
 		if err != nil {
 			if attempt < uploadInitMaxAttempts && isRetryableGraphQLError(err) {
 				log.Printf("[Leonardo] Upload init attempt %d/%d failed: %v; retrying", attempt, uploadInitMaxAttempts, err)
