@@ -85,26 +85,72 @@ type Credits struct {
 // Client manages Leonardo API interactions.
 type Client struct {
 	httpClient       *http.Client
+	uploadHTTPClient *http.Client
 	proxy            string
+	uploadProxyMode  string
+	uploadProxy      string
 	jwtRefreshMargin time.Duration
 }
 
 // NewClient creates a new Leonardo client.
 func NewClient(proxy string) *Client {
-	transport := &http.Transport{}
-	if proxy != "" {
-		if proxyURL, err := url.Parse(proxy); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
-	}
+	httpClient, _ := newLeonardoHTTPClient(proxy, defaultClientTimeout)
 	return &Client{
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   defaultClientTimeout,
-		},
+		httpClient:       httpClient,
+		uploadHTTPClient: httpClient,
 		proxy:            proxy,
+		uploadProxyMode:  "basic",
 		jwtRefreshMargin: defaultJWTRefreshMargin,
 	}
+}
+
+func newLeonardoHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
+	transport := &http.Transport{}
+	if strings.TrimSpace(proxy) != "" {
+		proxyURL, err := url.Parse(strings.TrimSpace(proxy))
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy url: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}, nil
+}
+
+func (c *Client) SetUploadProxyConfig(mode string, proxy string) error {
+	if c == nil {
+		return nil
+	}
+
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "basic"
+	}
+
+	var (
+		uploadClient *http.Client
+		err          error
+	)
+	switch mode {
+	case "basic":
+		uploadClient, err = newLeonardoHTTPClient(c.proxy, defaultClientTimeout)
+	case "direct":
+		uploadClient, err = newLeonardoHTTPClient("", defaultClientTimeout)
+	case "custom":
+		uploadClient, err = newLeonardoHTTPClient(proxy, defaultClientTimeout)
+	default:
+		return fmt.Errorf("unsupported upload proxy mode: %s", mode)
+	}
+	if err != nil {
+		return err
+	}
+
+	c.uploadHTTPClient = uploadClient
+	c.uploadProxyMode = mode
+	c.uploadProxy = strings.TrimSpace(proxy)
+	return nil
 }
 
 func (c *Client) SetJWTRefreshMarginMinutes(minutes int) {
@@ -1760,7 +1806,11 @@ func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData 
 		}
 		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-		resp, err := c.httpClient.Do(req)
+		client := c.httpClient
+		if c.uploadHTTPClient != nil {
+			client = c.uploadHTTPClient
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			if attempt < s3UploadMaxAttempts && isRetryableUploadError(err) {
 				log.Printf("[Leonardo] S3 upload attempt %d/%d failed: %v; retrying", attempt, s3UploadMaxAttempts, err)

@@ -554,6 +554,12 @@ func (s *Server) reloadRuntimeClients() {
 	s.LeonardoClient = leonardo.NewClient(basicProxy)
 	if s.Config != nil {
 		s.LeonardoClient.SetJWTRefreshMarginMinutes(s.Config.GetInt("jwt_refresh_margin_minutes", 5))
+		uploadMode := s.Config.GetString("leonardo_upload_proxy_mode", "basic")
+		uploadProxy := s.Config.GetString("leonardo_upload_proxy", "")
+		if err := s.LeonardoClient.SetUploadProxyConfig(uploadMode, uploadProxy); err != nil {
+			log.Printf("[proxy] invalid Leonardo upload proxy config (mode=%s): %v; fallback to basic", uploadMode, err)
+			_ = s.LeonardoClient.SetUploadProxyConfig("basic", "")
+		}
 	}
 	// 保留现有 Leonardo 会话缓存，避免仅仅因为保存系统配置就丢失 JWT，
 	// 导致下一次手动刷新总是重新续成 1 小时。

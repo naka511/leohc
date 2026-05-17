@@ -1081,6 +1081,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confProxy = document.getElementById("confProxy");
   const confResourceUseProxy = document.getElementById("confResourceUseProxy");
   const confResourceProxy = document.getElementById("confResourceProxy");
+  const confLeonardoUploadProxyMode = document.getElementById("confLeonardoUploadProxyMode");
+  const confLeonardoUploadProxy = document.getElementById("confLeonardoUploadProxy");
   const testProxyBtn = document.getElementById("testProxyBtn");
   const proxyTestResult = document.getElementById("proxyTestResult");
   const confGenerateTimeout = document.getElementById("confGenerateTimeout");
@@ -1208,6 +1210,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         confProxy.value = data.proxy || "";
         confResourceUseProxy.checked = data.resource_use_proxy || false;
         confResourceProxy.value = data.resource_proxy || "";
+        confLeonardoUploadProxyMode.value = String(data.leonardo_upload_proxy_mode || "basic");
+        confLeonardoUploadProxy.value = data.leonardo_upload_proxy || "";
         confGenerateTimeout.value = Number(data.generate_timeout || 300);
         confRetryEnabled.checked = Boolean(data.retry_enabled ?? true);
         confRetryMaxAttempts.value = Number(data.retry_max_attempts || 3);
@@ -1269,6 +1273,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         proxy: confProxy.value.trim(),
         resource_use_proxy: confResourceUseProxy.checked,
         resource_proxy: confResourceProxy.value.trim(),
+        leonardo_upload_proxy_mode: String(confLeonardoUploadProxyMode?.value || "basic").trim() || "basic",
+        leonardo_upload_proxy: confLeonardoUploadProxy.value.trim(),
         generate_timeout: Math.max(1, Number(confGenerateTimeout.value || 300)),
         retry_enabled: confRetryEnabled.checked,
         retry_max_attempts: Math.max(1, Math.min(10, Number(confRetryMaxAttempts.value || 3))),
@@ -1327,6 +1333,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       if (payload.resource_use_proxy && !/^https?:\/\//i.test(payload.resource_proxy)) {
         throw new Error("资源代理地址必须以 http:// 或 https:// 开头");
+      }
+      if (!["basic", "direct", "custom"].includes(payload.leonardo_upload_proxy_mode)) {
+        throw new Error("Leonardo 上传代理策略无效");
+      }
+      if (payload.leonardo_upload_proxy_mode === "custom" && !/^https?:\/\//i.test(payload.leonardo_upload_proxy)) {
+        throw new Error("Leonardo 上传代理地址必须以 http:// 或 https:// 开头");
       }
       if (payload.imgbed_enabled) {
         if (!/^https?:\/\//i.test(payload.imgbed_api_url)) {

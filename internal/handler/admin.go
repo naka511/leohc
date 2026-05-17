@@ -2932,8 +2932,6 @@ func (s *Server) newResourceHTTPClient(timeout time.Duration) (*http.Client, err
 	proxyStr := ""
 	if s.Config.GetBool("resource_use_proxy", false) {
 		proxyStr = strings.TrimSpace(s.Config.GetString("resource_proxy", ""))
-	} else if s.Config.GetBool("use_proxy", false) {
-		proxyStr = strings.TrimSpace(s.Config.GetString("proxy", ""))
 	}
 
 	if proxyStr != "" {
