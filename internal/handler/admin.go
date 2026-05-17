@@ -2061,6 +2061,7 @@ const (
 	remoteVideoFetchTimeout = 500 * time.Second
 	initImageLookupTimeout  = 500 * time.Second
 	remoteFetchMaxAttempts  = 3
+	remoteFetchRetryDelay   = 2 * time.Second
 )
 
 func extractPathParam(path, prefix string) string {
@@ -2611,17 +2612,30 @@ func isRetryableRemoteFetchError(err error) bool {
 		return false
 	}
 	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "unexpected eof") ||
-		strings.Contains(msg, "connection reset")
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "temporary failure") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "eof")
+}
+
+func isRetryableRemoteFetchStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return statusCode >= 500
+	}
 }
 
 func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string) (*leonardo.UploadInitResult, error) {
-	const maxInitAttempts = 2
+	const maxInitAttempts = 3
 
 	for attempt := 1; attempt <= maxInitAttempts; attempt++ {
 		initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
@@ -2634,7 +2648,8 @@ func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, me
 			return initResult, nil
 		}
 		if attempt < maxInitAttempts && isLeonardoS3PolicyExpired(err) {
-			log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket", mediaKind, initResult.UploadID)
+			log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket (%d/%d)", mediaKind, initResult.UploadID, attempt, maxInitAttempts)
+			time.Sleep(time.Duration(attempt) * time.Second)
 			continue
 		}
 		return nil, fmt.Errorf("s3 upload failed: %w", err)
@@ -2707,18 +2722,20 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 		return nil, "", "", err
 	}
 
-	req, err := http.NewRequest("GET", parsedURL.String(), nil)
-	if err != nil {
-		return nil, "", "", err
-	}
-	req.Header.Set("User-Agent", "leo-go-image-fetch/1.0")
-	req.Header.Set("Accept", "image/*,*/*;q=0.8")
-
 	for attempt := 1; attempt <= remoteFetchMaxAttempts; attempt++ {
+		req, err := http.NewRequest("GET", parsedURL.String(), nil)
+		if err != nil {
+			return nil, "", "", err
+		}
+		req.Header.Set("User-Agent", "leo-go-image-fetch/1.0")
+		req.Header.Set("Accept", "image/*,*/*;q=0.8")
+		req.Close = true
+
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(err) {
 				log.Printf("[Leonardo] Remote image fetch attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, err)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
 				continue
 			}
 			return nil, "", "", fmt.Errorf("fetch image url failed: %w", err)
@@ -2729,12 +2746,18 @@ func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, 
 		if readErr != nil {
 			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(readErr) {
 				log.Printf("[Leonardo] Remote image read attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, readErr)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
 				continue
 			}
 			return nil, "", "", fmt.Errorf("read image url failed: %w", readErr)
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchStatus(resp.StatusCode) {
+				log.Printf("[Leonardo] Remote image fetch attempt %d/%d returned retryable status %d for %s; retrying", attempt, remoteFetchMaxAttempts, resp.StatusCode, remoteURL)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
 			return nil, "", "", fmt.Errorf("image url returned %d", resp.StatusCode)
 		}
 		if len(imageData) == 0 {
@@ -2786,18 +2809,20 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 		return nil, "", "", 0, err
 	}
 
-	req, err := http.NewRequest("GET", parsedURL.String(), nil)
-	if err != nil {
-		return nil, "", "", 0, err
-	}
-	req.Header.Set("User-Agent", "leo-go-video-fetch/1.0")
-	req.Header.Set("Accept", "video/*,*/*;q=0.8")
-
 	for attempt := 1; attempt <= remoteFetchMaxAttempts; attempt++ {
+		req, err := http.NewRequest("GET", parsedURL.String(), nil)
+		if err != nil {
+			return nil, "", "", 0, err
+		}
+		req.Header.Set("User-Agent", "leo-go-video-fetch/1.0")
+		req.Header.Set("Accept", "video/*,*/*;q=0.8")
+		req.Close = true
+
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(err) {
 				log.Printf("[Leonardo] Remote video fetch attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, err)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
 				continue
 			}
 			return nil, "", "", 0, fmt.Errorf("fetch video url failed: %w", err)
@@ -2808,12 +2833,18 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 		if readErr != nil {
 			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(readErr) {
 				log.Printf("[Leonardo] Remote video read attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, readErr)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
 				continue
 			}
 			return nil, "", "", 0, fmt.Errorf("read video url failed: %w", readErr)
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchStatus(resp.StatusCode) {
+				log.Printf("[Leonardo] Remote video fetch attempt %d/%d returned retryable status %d for %s; retrying", attempt, remoteFetchMaxAttempts, resp.StatusCode, remoteURL)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
 			return nil, "", "", 0, fmt.Errorf("video url returned %d", resp.StatusCode)
 		}
 		if len(videoData) == 0 {
