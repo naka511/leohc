@@ -188,12 +188,27 @@
                 <input type="checkbox" id="confResourceUseProxy" />
                 启用资源代理
               </label>
-              <p class="help">资源代理用于下载、上传图片视频这类“搬运业务”的请求。</p>
+              <p class="help">资源代理用于下载远程图片、视频这类“搬运业务”的请求；未开启时，这些资源请求会直连，不再回退使用基础代理。</p>
             </div>
 
             <div class="form-group">
               <label for="confResourceProxy">资源代理地址 (Proxy URL)</label>
               <input type="text" id="confResourceProxy" class="input-text" placeholder="例如：http://127.0.0.1:7890" />
+            </div>
+
+            <div class="form-group">
+              <label for="confLeonardoUploadProxyMode">Leonardo 上传代理策略</label>
+              <select id="confLeonardoUploadProxyMode" class="input-text">
+                <option value="basic">跟随基础代理</option>
+                <option value="direct">强制直连</option>
+                <option value="custom">单独上传代理</option>
+              </select>
+              <p class="help">只影响上传图片/视频到 Leonardo 临时 S3 的链路，不影响生成、轮询、刷新 Token 这些基础业务请求。</p>
+            </div>
+
+            <div class="form-group">
+              <label for="confLeonardoUploadProxy">Leonardo 上传代理地址 (Proxy URL)</label>
+              <input type="text" id="confLeonardoUploadProxy" class="input-text" placeholder="例如：http://127.0.0.1:7890" />
             </div>
 
             <div class="form-group">

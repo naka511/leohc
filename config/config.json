@@ -11,6 +11,8 @@
   "imgbed_api_key": "",
   "imgbed_api_url": "",
   "imgbed_enabled": false,
+  "leonardo_upload_proxy": "",
+  "leonardo_upload_proxy_mode": "basic",
   "proxy": "",
   "public_base_url": "http://127.0.0.1:8787/",
   "jwt_refresh_margin_minutes": 5,

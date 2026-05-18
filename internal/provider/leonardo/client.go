@@ -30,12 +30,14 @@ const (
 )
 
 const (
-	defaultClientTimeout  = 120 * time.Second
-	defaultInitWait       = 180 * time.Second
-	s3UploadMaxAttempts   = 3
-	s3UploadRetryDelay    = 2 * time.Second
-	uploadInitMaxAttempts = 3
-	uploadInitRetryDelay  = 2 * time.Second
+	defaultClientTimeout   = 120 * time.Second
+	uploadInitTimeout      = 300 * time.Second
+	s3UploadRequestTimeout = 500 * time.Second
+	defaultInitWait        = 180 * time.Second
+	s3UploadMaxAttempts    = 3
+	s3UploadRetryDelay     = 2 * time.Second
+	uploadInitMaxAttempts  = 3
+	uploadInitRetryDelay   = 2 * time.Second
 )
 
 const defaultJWTRefreshMargin = 5 * time.Minute
@@ -84,27 +86,77 @@ type Credits struct {
 
 // Client manages Leonardo API interactions.
 type Client struct {
-	httpClient       *http.Client
-	proxy            string
-	jwtRefreshMargin time.Duration
+	httpClient           *http.Client
+	uploadInitHTTPClient *http.Client
+	uploadHTTPClient     *http.Client
+	proxy                string
+	uploadProxyMode      string
+	uploadProxy          string
+	jwtRefreshMargin     time.Duration
 }
 
 // NewClient creates a new Leonardo client.
 func NewClient(proxy string) *Client {
-	transport := &http.Transport{}
-	if proxy != "" {
-		if proxyURL, err := url.Parse(proxy); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
-	}
+	httpClient, _ := newLeonardoHTTPClient(proxy, defaultClientTimeout)
+	uploadInitHTTPClient, _ := newLeonardoHTTPClient(proxy, uploadInitTimeout)
+	uploadHTTPClient, _ := newLeonardoHTTPClient(proxy, s3UploadRequestTimeout)
 	return &Client{
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   defaultClientTimeout,
-		},
-		proxy:            proxy,
-		jwtRefreshMargin: defaultJWTRefreshMargin,
+		httpClient:           httpClient,
+		uploadInitHTTPClient: uploadInitHTTPClient,
+		uploadHTTPClient:     uploadHTTPClient,
+		proxy:                proxy,
+		uploadProxyMode:      "basic",
+		jwtRefreshMargin:     defaultJWTRefreshMargin,
 	}
+}
+
+func newLeonardoHTTPClient(proxy string, timeout time.Duration) (*http.Client, error) {
+	transport := &http.Transport{}
+	if strings.TrimSpace(proxy) != "" {
+		proxyURL, err := url.Parse(strings.TrimSpace(proxy))
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy url: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}, nil
+}
+
+func (c *Client) SetUploadProxyConfig(mode string, proxy string) error {
+	if c == nil {
+		return nil
+	}
+
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "basic"
+	}
+
+	var (
+		uploadClient *http.Client
+		err          error
+	)
+	switch mode {
+	case "basic":
+		uploadClient, err = newLeonardoHTTPClient(c.proxy, s3UploadRequestTimeout)
+	case "direct":
+		uploadClient, err = newLeonardoHTTPClient("", s3UploadRequestTimeout)
+	case "custom":
+		uploadClient, err = newLeonardoHTTPClient(proxy, s3UploadRequestTimeout)
+	default:
+		return fmt.Errorf("unsupported upload proxy mode: %s", mode)
+	}
+	if err != nil {
+		return err
+	}
+
+	c.uploadHTTPClient = uploadClient
+	c.uploadProxyMode = mode
+	c.uploadProxy = strings.TrimSpace(proxy)
+	return nil
 }
 
 func (c *Client) SetJWTRefreshMarginMinutes(minutes int) {
@@ -239,6 +291,7 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	req.Close = true
 
 	// 发送完整 cookie 字符串，包含所有必要的 cookie
 	cookieStr := NormalizeCookie(session.FullCookie)
@@ -699,6 +752,10 @@ func inferResolutionMode(width int, height int) string {
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
 func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
+	return c.doGraphQLWithClient(c.httpClient, jwt, gqlReq)
+}
+
+func (c *Client) doGraphQLWithClient(client *http.Client, jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	reqBody, err := json.Marshal(gqlReq)
 	if err != nil {
 		return nil, err
@@ -708,6 +765,7 @@ func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Close = true
 
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Content-Type", "application/json")
@@ -717,7 +775,10 @@ func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 	req.Header.Set("X-Leo-Schema-Version", "latest")
 
-	resp, err := c.httpClient.Do(req)
+	if client == nil {
+		client = c.httpClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("graphql request failed: %w", err)
 	}
@@ -1450,7 +1511,7 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 	}
 
 	for attempt := 1; attempt <= uploadInitMaxAttempts; attempt++ {
-		body, err := c.doGraphQL(jwt, gqlReq)
+		body, err := c.doGraphQLWithClient(c.uploadInitHTTPClient, jwt, gqlReq)
 		if err != nil {
 			if attempt < uploadInitMaxAttempts && isRetryableGraphQLError(err) {
 				log.Printf("[Leonardo] Upload init attempt %d/%d failed: %v; retrying", attempt, uploadInitMaxAttempts, err)
@@ -1758,9 +1819,14 @@ func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData 
 		if err != nil {
 			return err
 		}
+		req.Close = true
 		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
-		resp, err := c.httpClient.Do(req)
+		client := c.httpClient
+		if c.uploadHTTPClient != nil {
+			client = c.uploadHTTPClient
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			if attempt < s3UploadMaxAttempts && isRetryableUploadError(err) {
 				log.Printf("[Leonardo] S3 upload attempt %d/%d failed: %v; retrying", attempt, s3UploadMaxAttempts, err)
