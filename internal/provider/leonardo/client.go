@@ -291,6 +291,7 @@ func (c *Client) RefreshSession(session *TokenSession) error {
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	req.Close = true
 
 	// 发送完整 cookie 字符串，包含所有必要的 cookie
 	cookieStr := NormalizeCookie(session.FullCookie)
@@ -764,6 +765,7 @@ func (c *Client) doGraphQLWithClient(client *http.Client, jwt string, gqlReq gra
 	if err != nil {
 		return nil, err
 	}
+	req.Close = true
 
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Content-Type", "application/json")
@@ -1817,6 +1819,7 @@ func (c *Client) UploadImageToS3(uploadURL string, fieldsJSON string, imageData 
 		if err != nil {
 			return err
 		}
+		req.Close = true
 		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 
 		client := c.httpClient
