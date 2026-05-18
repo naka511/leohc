@@ -2607,6 +2607,27 @@ func isLeonardoS3PolicyExpired(err error) bool {
 	return strings.Contains(err.Error(), "Policy expired")
 }
 
+func isRetryableLeonardoS3Upload(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "policy expired") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "temporary failure") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "s3 upload returned 408") ||
+		strings.Contains(msg, "s3 upload returned 429") ||
+		strings.Contains(msg, "s3 upload returned 500") ||
+		strings.Contains(msg, "s3 upload returned 502") ||
+		strings.Contains(msg, "s3 upload returned 503") ||
+		strings.Contains(msg, "s3 upload returned 504") ||
+		strings.Contains(msg, ": eof")
+}
+
 func isRetryableRemoteFetchError(err error) bool {
 	if err == nil {
 		return false
@@ -2647,9 +2668,12 @@ func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, me
 		if err == nil {
 			return initResult, nil
 		}
-		if attempt < maxInitAttempts && isLeonardoS3PolicyExpired(err) {
-			log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket (%d/%d)", mediaKind, initResult.UploadID, attempt, maxInitAttempts)
-			time.Sleep(time.Duration(attempt) * time.Second)
+		if attempt < maxInitAttempts && isRetryableLeonardoS3Upload(err) {
+			if isLeonardoS3PolicyExpired(err) {
+				log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket immediately (%d/%d)", mediaKind, initResult.UploadID, attempt, maxInitAttempts)
+			} else {
+				log.Printf("[Leonardo] %s upload failed for uploadID=%s with retryable staging error; refreshing upload ticket (%d/%d): %v", mediaKind, initResult.UploadID, attempt, maxInitAttempts, err)
+			}
 			continue
 		}
 		return nil, fmt.Errorf("s3 upload failed: %w", err)
