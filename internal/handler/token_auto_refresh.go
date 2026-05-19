@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const autoRefreshSweepInterval = time.Minute
+const autoRefreshRetryCooldown = time.Minute
 
 // StartTokenAutoRefreshLoop starts the background Leonardo token refresh sweep.
 func (s *Server) StartTokenAutoRefreshLoop() {
@@ -30,13 +30,9 @@ func (s *Server) StartTokenAutoRefreshLoop() {
 
 	go func() {
 		log.Printf("[token] auto-refresh loop started")
-		s.runTokenAutoRefreshSweep()
-
-		ticker := time.NewTicker(autoRefreshSweepInterval)
-		defer ticker.Stop()
-
-		for range ticker.C {
+		for {
 			s.runTokenAutoRefreshSweep()
+			time.Sleep(s.tokenAutoRefreshSweepInterval())
 		}
 	}()
 }
@@ -65,7 +61,7 @@ func (s *Server) runTokenAutoRefreshSweep() {
 		return
 	}
 
-	interval := s.tokenAutoRefreshInterval()
+	threshold := s.tokenAutoRefreshThreshold()
 	now := time.Now()
 
 	for _, item := range tokens {
@@ -84,7 +80,7 @@ func (s *Server) runTokenAutoRefreshSweep() {
 			continue
 		}
 
-		if !s.shouldRunTokenAutoRefresh(tokenID, now, interval) {
+		if !s.shouldRunTokenAutoRefresh(item, tokenID, now, threshold) {
 			continue
 		}
 		s.refreshLeonardoTokenByID(tokenID)
@@ -163,20 +159,24 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 	log.Printf("[token] auto-refresh completed for %s (%s)", tokenID, session.Email)
 }
 
-func (s *Server) tokenAutoRefreshInterval() time.Duration {
-	minutes := 15
+func (s *Server) tokenAutoRefreshThreshold() time.Duration {
+	minutes := 10
 	if s != nil && s.Config != nil {
 		minutes = s.Config.GetInt("refresh_interval_minutes", 0)
-		if minutes <= 0 {
-			hours := s.Config.GetInt("refresh_interval_hours", 15)
-			if hours < 1 {
-				hours = 1
-			}
-			if hours > 24 {
-				hours = 24
-			}
-			minutes = hours * 60
-		}
+	}
+	if minutes < 1 {
+		minutes = 10
+	}
+	if minutes > 1440 {
+		minutes = 1440
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func (s *Server) tokenAutoRefreshSweepInterval() time.Duration {
+	minutes := 1
+	if s != nil && s.Config != nil {
+		minutes = s.Config.GetInt("auto_refresh_sweep_interval_minutes", 0)
 	}
 	if minutes < 1 {
 		minutes = 1
@@ -187,14 +187,21 @@ func (s *Server) tokenAutoRefreshInterval() time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
-func (s *Server) shouldRunTokenAutoRefresh(tokenID string, now time.Time, interval time.Duration) bool {
+func (s *Server) shouldRunTokenAutoRefresh(item map[string]interface{}, tokenID string, now time.Time, threshold time.Duration) bool {
+	if expiresAt := toFloat64(item["expires_at"]); expiresAt > 0 {
+		expiry := time.Unix(int64(expiresAt), 0)
+		if expiry.After(now.Add(threshold)) {
+			return false
+		}
+	}
+
 	s.autoRefreshMu.Lock()
 	defer s.autoRefreshMu.Unlock()
 
 	if s.autoRefreshRun == nil {
 		s.autoRefreshRun = make(map[string]time.Time)
 	}
-	if last, ok := s.autoRefreshRun[tokenID]; ok && !last.IsZero() && now.Sub(last) < interval {
+	if last, ok := s.autoRefreshRun[tokenID]; ok && !last.IsZero() && now.Sub(last) < autoRefreshRetryCooldown {
 		return false
 	}
 	return true
