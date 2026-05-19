@@ -1095,6 +1095,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confTokenSuccessAutoDisableEnabled = document.getElementById("confTokenSuccessAutoDisableEnabled");
   const confTokenSuccessAutoDisableThreshold = document.getElementById("confTokenSuccessAutoDisableThreshold");
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
+  let confAutoRefreshSweepIntervalMinutes = null;
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
@@ -1143,6 +1144,42 @@ document.addEventListener("DOMContentLoaded", async () => {
   let logsCurrentPage = 1;
   let logsTotalPages = 1;
   let logsRunningTotal = 0;
+
+  const refreshThresholdLabel = document.querySelector('label[for="confRefreshIntervalMinutes"]');
+  if (refreshThresholdLabel) {
+    refreshThresholdLabel.textContent = "自动刷新触发阈值 (分钟)";
+  }
+  if (confRefreshIntervalMinutes) {
+    confRefreshIntervalMinutes.placeholder = "默认 10";
+    const help = confRefreshIntervalMinutes.parentElement?.querySelector(".help");
+    if (help) {
+      help.textContent = "范围 1-1440 分钟。后台大约每分钟巡检一次；当 token 剩余有效期小于等于该值时，会自动提前刷新。";
+    }
+  }
+  if (confRefreshIntervalMinutes?.parentElement) {
+    const existingSweepInput = document.getElementById("confAutoRefreshSweepIntervalMinutes");
+    if (!existingSweepInput) {
+      const sweepGroup = document.createElement("div");
+      sweepGroup.className = "form-group";
+      sweepGroup.innerHTML = `
+        <label for="confAutoRefreshSweepIntervalMinutes">自动刷新巡检间隔 (分钟)</label>
+        <input type="number" id="confAutoRefreshSweepIntervalMinutes" class="input-text" min="1" max="1440" step="1" placeholder="默认 1" />
+        <p class="help">范围 1-1440 分钟。后台会按这个间隔巡检一次 token；是否真正刷新，仍由上面的“自动刷新触发阈值”决定。</p>
+      `;
+      confRefreshIntervalMinutes.parentElement.insertAdjacentElement("afterend", sweepGroup);
+    }
+    confAutoRefreshSweepIntervalMinutes = document.getElementById("confAutoRefreshSweepIntervalMinutes");
+  }
+  const jwtMarginLabel = document.querySelector('label[for="confJwtRefreshMarginMinutes"]');
+  if (jwtMarginLabel) {
+    jwtMarginLabel.textContent = "请求前兜底刷新阈值 (分钟)";
+  }
+  if (confJwtRefreshMarginMinutes) {
+    const help = confJwtRefreshMarginMinutes.parentElement?.querySelector(".help");
+    if (help) {
+      help.textContent = "默认 5。用于真正发请求前的兜底换新：当 JWT 剩余时间小于等于该值时，会先刷新 JWT 再发送生成、轮询或手动刷新等请求。";
+    }
+  }
 
   function isFailedOnlyFilterEnabled() {
     return Boolean(logsFailedOnly?.checked);
@@ -1229,10 +1266,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confTokenSuccessAutoDisableThreshold) {
           confTokenSuccessAutoDisableThreshold.value = Number(data.token_success_auto_disable_threshold || 2);
         }
-        const refreshIntervalMinutes = Number(
-          data.refresh_interval_minutes || (Number(data.refresh_interval_hours || 0) > 0 ? Number(data.refresh_interval_hours) * 60 : 15)
-        );
+        const refreshIntervalMinutes = Number(data.refresh_interval_minutes || 10);
         confRefreshIntervalMinutes.value = refreshIntervalMinutes;
+        if (confAutoRefreshSweepIntervalMinutes) {
+          confAutoRefreshSweepIntervalMinutes.value = Number(data.auto_refresh_sweep_interval_minutes || 1);
+        }
         if (confJwtRefreshMarginMinutes) {
           confJwtRefreshMarginMinutes.value = Math.max(0, Math.min(60, Number(data.jwt_refresh_margin_minutes ?? 5)));
         }
@@ -1290,7 +1328,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         token_rotation_strategy: String(confTokenRotationStrategy.value || "round_robin").trim() || "round_robin",
         token_success_auto_disable_enabled: Boolean(confTokenSuccessAutoDisableEnabled?.checked),
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
-        refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 15),
+        refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 10),
+        auto_refresh_sweep_interval_minutes: Number(confAutoRefreshSweepIntervalMinutes?.value || 1),
         jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
         generated_max_size_mb: Math.max(100, Math.min(102400, Number(confGeneratedMaxSizeMb.value || 1024))),
@@ -1309,6 +1348,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       delete payload.refresh_interval_hours;
+      if (!Number.isInteger(payload.auto_refresh_sweep_interval_minutes) || payload.auto_refresh_sweep_interval_minutes < 1 || payload.auto_refresh_sweep_interval_minutes > 1440) {
+        throw new Error("自动刷新巡检间隔必须是 1-1440 的整数分钟");
+      }
 
       if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
         throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");
