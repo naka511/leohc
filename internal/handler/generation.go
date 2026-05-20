@@ -264,9 +264,9 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if isRetryableGuidancePreparationError(err) {
 				failure := &videoGenerationAttemptFailure{
-					StatusCode:      http.StatusBadGateway,
+					StatusCode:      http.StatusBadRequest,
 					Message:         err.Error(),
-					ErrorType:       "server_error",
+					ErrorType:       "invalid_request_error",
 					RetryCodeSource: extractRetryCodeSource(err.Error()),
 				}
 				lastFailure = failure

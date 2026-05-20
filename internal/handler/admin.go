@@ -2648,6 +2648,7 @@ func isRetryableLeonardoS3Upload(err error) bool {
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "temporary failure") ||
 		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "s3 upload returned 403") ||
 		strings.Contains(msg, "s3 upload returned 408") ||
 		strings.Contains(msg, "s3 upload returned 429") ||
 		strings.Contains(msg, "s3 upload returned 500") ||
@@ -2685,18 +2686,26 @@ func isRetryableRemoteFetchStatus(statusCode int) bool {
 }
 
 func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string) (*leonardo.UploadInitResult, error) {
-	const maxInitAttempts = 3
+	const maxInitAttempts = 5
+	var lastErr error
 
 	for attempt := 1; attempt <= maxInitAttempts; attempt++ {
 		initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
 		if err != nil {
-			return nil, fmt.Errorf("upload init failed: %w", err)
+			lastErr = fmt.Errorf("upload init failed: %w", err)
+			if attempt < maxInitAttempts && isRetryableRemoteFetchError(err) {
+				log.Printf("[Leonardo] %s upload init failed; retrying with a fresh ticket (%d/%d): %v", mediaKind, attempt, maxInitAttempts, err)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
+			return nil, lastErr
 		}
 
 		err = s.LeonardoClient.UploadImageToS3(initResult.URL, initResult.Fields, mediaData, contentType)
 		if err == nil {
 			return initResult, nil
 		}
+		lastErr = fmt.Errorf("s3 upload failed: %w", err)
 		if attempt < maxInitAttempts && isRetryableLeonardoS3Upload(err) {
 			if isLeonardoS3PolicyExpired(err) {
 				log.Printf("[Leonardo] %s upload policy expired for uploadID=%s; refreshing upload ticket immediately (%d/%d)", mediaKind, initResult.UploadID, attempt, maxInitAttempts)
@@ -2705,10 +2714,13 @@ func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, me
 			}
 			continue
 		}
-		return nil, fmt.Errorf("s3 upload failed: %w", err)
+		return nil, lastErr
 	}
 
-	return nil, fmt.Errorf("s3 upload failed: exhausted upload ticket refresh attempts")
+	if lastErr != nil {
+		return nil, fmt.Errorf("exhausted upload ticket refresh attempts after %d attempt(s): %w", maxInitAttempts, lastErr)
+	}
+	return nil, fmt.Errorf("exhausted upload ticket refresh attempts after %d attempt(s)", maxInitAttempts)
 }
 
 func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remoteURL string) (string, float64, error) {
