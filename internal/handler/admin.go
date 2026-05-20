@@ -2648,6 +2648,7 @@ func isRetryableLeonardoS3Upload(err error) bool {
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "temporary failure") ||
 		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "s3 upload returned 403") ||
 		strings.Contains(msg, "s3 upload returned 408") ||
 		strings.Contains(msg, "s3 upload returned 429") ||
 		strings.Contains(msg, "s3 upload returned 500") ||
