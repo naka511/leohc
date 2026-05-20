@@ -114,3 +114,38 @@ func TestRetryableGuidancePreparationError(t *testing.T) {
 		}
 	}
 }
+
+func TestRequiredCreditsForVideoModel(t *testing.T) {
+	tests := []struct {
+		modelID string
+		want    float64
+		ok      bool
+	}{
+		{modelID: "video-2.0", want: video2RequiredCredits, ok: true},
+		{modelID: "seedance-2.0", want: video2RequiredCredits, ok: true},
+		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
+		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
+		{modelID: "sora-2", want: 0, ok: false},
+	}
+	for _, tt := range tests {
+		got, ok := requiredCreditsForVideoModel(tt.modelID)
+		if ok != tt.ok || got != tt.want {
+			t.Fatalf("requiredCreditsForVideoModel(%q) = %.0f, %v; want %.0f, %v", tt.modelID, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestTokenCreditsAvailable(t *testing.T) {
+	if got, ok := tokenCreditsAvailable(map[string]interface{}{"credits_available": 3950}); !ok || got != 3950 {
+		t.Fatalf("credits_available = %.0f, %v; want 3950, true", got, ok)
+	}
+	if got, ok := tokenCreditsAvailable(map[string]interface{}{"credits": 8500}); !ok || got != 8500 {
+		t.Fatalf("credits = %.0f, %v; want 8500, true", got, ok)
+	}
+	if got, ok := tokenCreditsAvailable(map[string]interface{}{"max_credits": 8500}); !ok || got != 0 {
+		t.Fatalf("max_credits-only = %.0f, %v; want 0, true", got, ok)
+	}
+	if _, ok := tokenCreditsAvailable(map[string]interface{}{}); ok {
+		t.Fatal("empty token info should not have known credits")
+	}
+}

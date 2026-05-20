@@ -55,6 +55,8 @@ const (
 	defaultSeedanceVideoDuration = 10
 	defaultSora2VideoDuration    = 8
 	tokenPreparationLeaseTTL     = 5 * time.Minute
+	video2RequiredCredits        = 4550
+	video2FastRequiredCredits    = 3650
 )
 
 // Server holds all dependencies for HTTP handlers.
@@ -253,8 +255,8 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			if lastFailure != nil {
 				break
 			}
-			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 503, "No Leonardo tokens available")
-			writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 503, "No tokens available")
+			writeJSON(w, 503, errorResp("No tokens available", "server_error"))
 			return
 		}
 
@@ -358,7 +360,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+	writeJSON(w, 503, errorResp("No tokens available", "server_error"))
 }
 
 // HandleVideoGenerationStatus handles GET /v1/video/generations/{id}.

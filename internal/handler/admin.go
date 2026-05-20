@@ -2183,7 +2183,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	// Get session from token pool
 	session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease(body.TokenID, nil, modelID)
 	if session == nil {
-		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found or no Leonardo tokens available"})
+		writeJSON(w, 404, map[string]string{"detail": "No tokens available"})
 		return
 	}
 	defer releaseTokenPreparation()
@@ -3212,8 +3212,10 @@ func (s *Server) refreshTokenCredits(tokenID string, session *leonardo.TokenSess
 		return
 	}
 	if credits != nil {
-		s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
+		availableCredits := float64(credits.TotalTokens)
+		s.TokenMgr.UpdateCredits(tokenID, availableCredits, float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		log.Printf("[poll] refreshed credits for token %s: %d remaining", tokenID, credits.TotalTokens)
+		s.markTokenExhaustedIfBelowGenerationMinimum(tokenID, availableCredits, "remaining credits below video generation minimum after credits refresh")
 	}
 }
 
@@ -3254,9 +3256,12 @@ func (s *Server) applyTokenCreditCost(tokenID string, creditCost int) {
 	if info == nil {
 		return
 	}
-	current := toFloat64(info["credits_available"])
+	current, knownCredits := tokenCreditsAvailable(info)
 	total := toFloat64(info["credits_total"])
-	if current <= 0 && total <= 0 {
+	if total <= 0 {
+		total = toFloat64(info["max_credits"])
+	}
+	if !knownCredits && total <= 0 {
 		return
 	}
 	next := current - float64(creditCost)
@@ -3271,27 +3276,14 @@ func (s *Server) applyTokenCreditCost(tokenID string, creditCost int) {
 		return
 	}
 	log.Printf("[poll] applied credit cost for token %s: -%d, %.0f remaining", tokenID, creditCost, next)
+	s.markTokenExhaustedIfBelowGenerationMinimum(tokenID, next, "remaining credits below video generation minimum after accepted generation")
 }
 
 func (s *Server) reportVideoGenerationSuccess(tokenID string, modelID string) {
 	if tokenID == "" || s.TokenMgr == nil {
 		return
 	}
-	if !isSeedanceModelID(modelID) {
-		s.TokenMgr.ReportSuccess(tokenID)
-		return
-	}
-	autoDisableEnabled := false
-	if s.Config != nil {
-		autoDisableEnabled = s.Config.GetBool("token_success_auto_disable_enabled", false)
-	}
-	info := s.TokenMgr.ReportModelSuccessWithAutoDisable(tokenID, modelID, autoDisableEnabled)
-	if info == nil || !autoDisableEnabled {
-		return
-	}
-	if strings.EqualFold(strings.TrimSpace(toString(info["status"])), "exhausted") {
-		log.Printf("[token] auto-disabled exhausted Seedance token %s after model usage fast=%v standard=%v", tokenID, info["seedance_fast_success_count"], info["seedance_standard_success_count"])
-	}
+	s.TokenMgr.ReportSuccess(tokenID)
 }
 
 func (s *Server) tokenRunningGenerationCount(tokenID string) int {
@@ -3411,7 +3403,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		if s.tokenHasPreparationLease(foundID) || !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.seedanceTokenCanRunModel(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID) {
 			continue
 		}
 		if !s.reserveTokenPreparation(foundID) {
@@ -3478,7 +3470,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.seedanceTokenCanRunModel(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID) {
 			continue
 		}
 
@@ -3518,7 +3510,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 		if isExpiredTokenInfo(info) {
 			return nil, ""
 		}
-		if !s.seedanceTokenCanRunModel(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID) {
 			return nil, ""
 		}
 		rawToken, _ := info["value"].(string)
@@ -3564,7 +3556,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.seedanceTokenCanRunModel(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID) {
 			continue
 		}
 
@@ -3585,27 +3577,65 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 	return nil, ""
 }
 
-func (s *Server) seedanceTokenCanRunModel(info map[string]interface{}, modelID string) bool {
-	if info == nil || s == nil || s.Config == nil || !s.Config.GetBool("token_success_auto_disable_enabled", false) {
-		return true
-	}
-	fastCount := int(toFloat64(info["seedance_fast_success_count"]))
-	standardCount := int(toFloat64(info["seedance_standard_success_count"]))
-	if fastCount >= 2 || (standardCount >= 1 && fastCount >= 1) {
-		return false
-	}
+func requiredCreditsForVideoModel(modelID string) (float64, bool) {
 	canonicalModelID, ok := normalizeVideoModelID(modelID)
 	if !ok {
 		canonicalModelID = strings.TrimSpace(modelID)
 	}
 	switch canonicalModelID {
 	case "seedance-2.0":
-		return standardCount < 1
+		return video2RequiredCredits, true
 	case "seedance-2.0-fast":
-		return fastCount < 2
+		return video2FastRequiredCredits, true
 	default:
+		return 0, false
+	}
+}
+
+func tokenCreditsAvailable(info map[string]interface{}) (float64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	for _, key := range []string{"credits_available", "credits"} {
+		if _, ok := info[key]; ok {
+			return toFloat64(info[key]), true
+		}
+	}
+	for _, key := range []string{"credits_total", "max_credits"} {
+		if _, ok := info[key]; ok {
+			return 0, true
+		}
+	}
+	return 0, false
+}
+
+func (s *Server) markTokenExhaustedIfBelowGenerationMinimum(tokenID string, credits float64, reason string) {
+	if strings.TrimSpace(tokenID) == "" || credits >= video2FastRequiredCredits {
+		return
+	}
+	s.markTokenExhausted(tokenID, fmt.Sprintf("%s: %.0f < %.0f", strings.TrimSpace(reason), credits, float64(video2FastRequiredCredits)))
+}
+
+func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID string) bool {
+	requiredCredits, ok := requiredCreditsForVideoModel(modelID)
+	if !ok {
 		return true
 	}
+	availableCredits, known := tokenCreditsAvailable(info)
+	if !known {
+		log.Printf("[token] skipping token %s for %s: credits unavailable", strings.TrimSpace(toString(info["id"])), modelID)
+		return false
+	}
+	tokenID := strings.TrimSpace(toString(info["id"]))
+	if availableCredits < video2FastRequiredCredits {
+		s.markTokenExhaustedIfBelowGenerationMinimum(tokenID, availableCredits, "remaining credits below video generation minimum")
+		return false
+	}
+	if availableCredits < requiredCredits {
+		log.Printf("[token] skipping token %s for %s: credits %.0f < required %.0f", tokenID, modelID, availableCredits, requiredCredits)
+		return false
+	}
+	return true
 }
 
 func statusForLeonardoRefreshError(err error) int {
