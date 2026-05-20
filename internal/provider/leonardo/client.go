@@ -750,6 +750,23 @@ func inferResolutionMode(width int, height int) string {
 	return "RESOLUTION_720"
 }
 
+func isSora2Model(modelID string) bool {
+	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+}
+
+func isAllowedSora2Duration(duration int) bool {
+	switch duration {
+	case 4, 8, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedSora2Size(width int, height int) bool {
+	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
+}
+
 // doGraphQL sends a GraphQL request and returns the raw response body.
 func (c *Client) doGraphQL(jwt string, gqlReq graphqlRequest) ([]byte, error) {
 	return c.doGraphQLWithClient(c.httpClient, jwt, gqlReq)
@@ -806,11 +823,23 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	jwt := session.JWT
 	session.mu.RUnlock()
 
+	genReq.Model = strings.TrimSpace(genReq.Model)
+	if genReq.Model == "" {
+		genReq.Model = "seedance-2.0-fast"
+	}
 	if genReq.Params.Width == 0 {
-		genReq.Params.Width = 1280
+		if isSora2Model(genReq.Model) {
+			genReq.Params.Width = 720
+		} else {
+			genReq.Params.Width = 1280
+		}
 	}
 	if genReq.Params.Height == 0 {
-		genReq.Params.Height = 720
+		if isSora2Model(genReq.Model) {
+			genReq.Params.Height = 1280
+		} else {
+			genReq.Params.Height = 720
+		}
 	}
 	// Set defaults
 	if genReq.Params.Mode == "" {
@@ -819,33 +848,74 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Params.Quantity == 0 {
 		genReq.Params.Quantity = 1
 	}
+	if genReq.Params.Duration == 0 && isSora2Model(genReq.Model) {
+		genReq.Params.Duration = 8
+	}
 	if genReq.Params.Duration == 0 {
 		genReq.Params.Duration = 4
 	}
 	if genReq.Params.Seed == 0 {
 		genReq.Params.Seed = -1
 	}
-	if genReq.Model == "" {
-		genReq.Model = "seedance-2.0-fast"
+	if isSora2Model(genReq.Model) {
+		if !isAllowedSora2Duration(genReq.Params.Duration) {
+			return nil, fmt.Errorf("sora-2 duration must be 4, 8, or 12 seconds")
+		}
+		if !isAllowedSora2Size(genReq.Params.Width, genReq.Params.Height) {
+			return nil, fmt.Errorf("sora-2 size must be 720x1280 or 1280x720")
+		}
+		if len(genReq.Params.StartFrame) > 1 {
+			return nil, fmt.Errorf("sora-2 supports at most one uploaded image")
+		}
 	}
 
-	params := map[string]interface{}{
-		"prompt":           genReq.Params.Prompt,
-		"mode":             genReq.Params.Mode,
-		"quantity":         genReq.Params.Quantity,
-		"duration":         genReq.Params.Duration,
-		"motion_has_audio": genReq.Params.MotionHasAudio,
-		"width":            genReq.Params.Width,
-		"height":           genReq.Params.Height,
-		"seed":             genReq.Params.Seed,
-	}
-	if strings.TrimSpace(genReq.Params.PromptEnhance) != "" {
-		params["prompt_enhance"] = strings.TrimSpace(genReq.Params.PromptEnhance)
+	params := map[string]interface{}{}
+	if isSora2Model(genReq.Model) {
+		params = map[string]interface{}{
+			"height":   genReq.Params.Height,
+			"width":    genReq.Params.Width,
+			"duration": genReq.Params.Duration,
+			"quantity": genReq.Params.Quantity,
+			"prompt":   genReq.Params.Prompt,
+			"mode":     genReq.Params.Mode,
+		}
+	} else {
+		params = map[string]interface{}{
+			"prompt":           genReq.Params.Prompt,
+			"mode":             genReq.Params.Mode,
+			"quantity":         genReq.Params.Quantity,
+			"duration":         genReq.Params.Duration,
+			"motion_has_audio": genReq.Params.MotionHasAudio,
+			"width":            genReq.Params.Width,
+			"height":           genReq.Params.Height,
+			"seed":             genReq.Params.Seed,
+		}
+		if strings.TrimSpace(genReq.Params.PromptEnhance) != "" {
+			params["prompt_enhance"] = strings.TrimSpace(genReq.Params.PromptEnhance)
+		}
 	}
 
 	// Build guidances map (supports image_reference, start_frame, end_frame)
 	hasGuidances := len(genReq.Params.ImageRefs) > 0 || len(genReq.Params.StartFrame) > 0 || len(genReq.Params.EndFrame) > 0 || len(genReq.Params.VideoRefs) > 0
-	if hasGuidances {
+	if hasGuidances && isSora2Model(genReq.Model) {
+		if len(genReq.Params.StartFrame) > 0 {
+			var frames []map[string]interface{}
+			for _, f := range genReq.Params.StartFrame {
+				fType := f.Type
+				if fType == "" {
+					fType = "UPLOADED"
+				}
+				frames = append(frames, map[string]interface{}{
+					"image": map[string]interface{}{
+						"id":   f.ID,
+						"type": fType,
+					},
+				})
+			}
+			params["guidances"] = map[string]interface{}{"start_frame": frames}
+			log.Printf("[Leonardo] Including start_frame in Sora 2 generation")
+		}
+	} else if hasGuidances {
 		guidances := map[string]interface{}{}
 
 		// Multi-image reference guidance

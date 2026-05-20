@@ -2146,10 +2146,38 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	if requestedModelID == "" {
 		requestedModelID = "video-2.0-fast"
 	}
-	modelID, ok := normalizeSeedanceModelID(requestedModelID)
+	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
 		writeJSON(w, 400, map[string]string{"detail": "unsupported model"})
 		return
+	}
+	if isSora2ModelID(modelID) && (len(body.ImageGuidance) > 0 || len(body.EndFrame) > 0 || len(body.VideoReference) > 0) {
+		writeJSON(w, 400, map[string]string{"detail": "sora-2 currently supports text-to-video and start-frame image-to-video requests only"})
+		return
+	}
+	if isSora2ModelID(modelID) {
+		if body.Duration == 0 {
+			body.Duration = defaultSora2VideoDuration
+		}
+		if !isAllowedSora2Duration(body.Duration) {
+			writeJSON(w, 400, map[string]string{"detail": "sora-2 duration must be 4, 8, or 12 seconds"})
+			return
+		}
+		defaultWidth, defaultHeight := defaultVideoSize(modelID)
+		if body.Width == 0 {
+			body.Width = defaultWidth
+		}
+		if body.Height == 0 {
+			body.Height = defaultHeight
+		}
+		if !isAllowedSora2Size(body.Width, body.Height) {
+			writeJSON(w, 400, map[string]string{"detail": "sora-2 size must be 720x1280 or 1280x720"})
+			return
+		}
+		if len(body.StartFrame) > 1 {
+			writeJSON(w, 400, map[string]string{"detail": "sora-2 supports at most one uploaded image"})
+			return
+		}
 	}
 
 	// Get session from token pool
@@ -3138,7 +3166,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 				}
 			}
 			// Refresh token credits
-			s.reportSeedanceGenerationSuccess(tokenID, modelID)
+			s.reportVideoGenerationSuccess(tokenID, modelID)
 			s.refreshTokenCredits(tokenID, session)
 			return
 
@@ -3244,8 +3272,12 @@ func (s *Server) applyTokenCreditCost(tokenID string, creditCost int) {
 	log.Printf("[poll] applied credit cost for token %s: -%d, %.0f remaining", tokenID, creditCost, next)
 }
 
-func (s *Server) reportSeedanceGenerationSuccess(tokenID string, modelID string) {
+func (s *Server) reportVideoGenerationSuccess(tokenID string, modelID string) {
 	if tokenID == "" || s.TokenMgr == nil {
+		return
+	}
+	if !isSeedanceModelID(modelID) {
+		s.TokenMgr.ReportSuccess(tokenID)
 		return
 	}
 	autoDisableEnabled := false
@@ -3433,7 +3465,7 @@ func (s *Server) seedanceTokenCanRunModel(info map[string]interface{}, modelID s
 	if fastCount >= 2 || (standardCount >= 1 && fastCount >= 1) {
 		return false
 	}
-	canonicalModelID, ok := normalizeSeedanceModelID(modelID)
+	canonicalModelID, ok := normalizeVideoModelID(modelID)
 	if !ok {
 		canonicalModelID = strings.TrimSpace(modelID)
 	}

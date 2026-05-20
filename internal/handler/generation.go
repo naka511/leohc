@@ -39,7 +39,22 @@ var openAIModelCatalog = []map[string]interface{}{
 			"size":     []string{"1280x720", "720x1280", "960x960"},
 		},
 	},
+	{
+		"id":          "sora-2",
+		"object":      "model",
+		"owned_by":    "leonardo",
+		"description": "Sora 2 video generation",
+		"parameters": map[string]interface{}{
+			"duration": []int{4, 8, 12},
+			"size":     []string{"1280x720", "720x1280"},
+		},
+	},
 }
+
+const (
+	defaultSeedanceVideoDuration = 10
+	defaultSora2VideoDuration    = 8
+)
 
 // Server holds all dependencies for HTTP handlers.
 type Server struct {
@@ -133,7 +148,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -142,7 +157,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -177,15 +192,19 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(requestedModelID) == "" {
 		requestedModelID = "video-2.0-fast"
 	}
-	modelID, ok := normalizeSeedanceModelID(requestedModelID)
+	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0 and video-2.0-fast; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, and sora-2; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
-	duration := 10
+	duration := defaultVideoDuration(modelID)
 	if d, ok := data["duration"].(float64); ok {
 		duration = int(d)
+	}
+	if isSora2ModelID(modelID) && !isAllowedSora2Duration(duration) {
+		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
+		return
 	}
 	if duration < 4 || duration > 15 {
 		writeJSON(w, 400, errorResp("duration must be between 4 and 15 seconds", "invalid_request_error"))
@@ -193,7 +212,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse size (e.g. "1280x720")
-	width, height := 1280, 720
+	width, height := defaultVideoSize(modelID)
 	if size, ok := data["size"].(string); ok && size != "" {
 		parts := strings.Split(size, "x")
 		if len(parts) == 2 {
@@ -204,6 +223,18 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				height = h
 			}
 		}
+	}
+	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
+		writeJSON(w, 400, errorResp("sora-2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
+		return
+	}
+	if isSora2ModelID(modelID) && !isAllowedSora2Size(width, height) {
+		writeJSON(w, 400, errorResp("sora-2 size must be 720x1280 or 1280x720", "invalid_request_error"))
+		return
+	}
+	if isSora2ModelID(modelID) && countSora2StartFrameInputs(data) > 1 {
+		writeJSON(w, 400, errorResp("sora-2 supports at most one uploaded image", "invalid_request_error"))
+		return
 	}
 
 	retryPolicy := s.loadGenerationRetryPolicy()
@@ -570,12 +601,14 @@ func (s *Server) reloadRuntimeClients() {
 	s.leoSessionMu.Unlock()
 }
 
-func normalizeSeedanceModelID(modelID string) (string, bool) {
+func normalizeVideoModelID(modelID string) (string, bool) {
 	switch strings.TrimSpace(modelID) {
 	case "video-2.0", "seedance-2.0":
 		return "seedance-2.0", true
 	case "video-2.0-fast", "seedance-2.0-fast":
 		return "seedance-2.0-fast", true
+	case "sora-2":
+		return "sora-2", true
 	default:
 		return "", false
 	}
@@ -590,6 +623,46 @@ func publicVideoModelID(modelID string) string {
 	default:
 		return strings.TrimSpace(modelID)
 	}
+}
+
+func isSora2ModelID(modelID string) bool {
+	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+}
+
+func isSeedanceModelID(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0", "video-2.0", "seedance-2.0-fast", "video-2.0-fast":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultVideoDuration(modelID string) int {
+	if isSora2ModelID(modelID) {
+		return defaultSora2VideoDuration
+	}
+	return defaultSeedanceVideoDuration
+}
+
+func defaultVideoSize(modelID string) (int, int) {
+	if isSora2ModelID(modelID) {
+		return 720, 1280
+	}
+	return 1280, 720
+}
+
+func isAllowedSora2Duration(duration int) bool {
+	switch duration {
+	case 4, 8, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedSora2Size(width int, height int) bool {
+	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
 }
 
 func leonardoVideoResolutionMode(width int, height int) string {
@@ -722,7 +795,7 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 						s.ReqLog.UpdateByGenerationID(generationID, "COMPLETE", 200, finalURL, "video", "")
 						s.ReqLog.UpdateDuration(generationID, elapsed)
 					}
-					s.reportSeedanceGenerationSuccess(usedTokenID, modelID)
+					s.reportVideoGenerationSuccess(usedTokenID, modelID)
 					s.refreshTokenCredits(usedTokenID, session)
 					return
 				}
@@ -899,6 +972,47 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	}
 
 	return imageRefs, startFrames, endFrames, videoRefs, nil
+}
+
+func hasUnsupportedSora2GuidanceInput(data map[string]interface{}) bool {
+	if data == nil {
+		return false
+	}
+	stringFields := []string{"end_image_url", "video_url"}
+	for _, field := range stringFields {
+		if strings.TrimSpace(toString(data[field])) != "" {
+			return true
+		}
+	}
+	arrayFields := []string{"image_urls", "image_guidance", "end_frame", "video_reference"}
+	for _, field := range arrayFields {
+		if rawItems, ok := data[field].([]interface{}); ok && len(rawItems) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func countSora2StartFrameInputs(data map[string]interface{}) int {
+	if data == nil {
+		return 0
+	}
+	count := 0
+	if strings.TrimSpace(toString(data["image_url"])) != "" {
+		count++
+	}
+	if strings.TrimSpace(toString(data["start_image_url"])) != "" {
+		count++
+	}
+	if rawFrames, ok := data["start_frame"].([]interface{}); ok {
+		for _, item := range rawFrames {
+			entry, _ := item.(map[string]interface{})
+			if strings.TrimSpace(toString(entry["id"])) != "" || strings.TrimSpace(toString(entry["url"])) != "" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func toString(v interface{}) string {
