@@ -34,7 +34,7 @@ const (
 	uploadInitTimeout      = 300 * time.Second
 	s3UploadRequestTimeout = 500 * time.Second
 	defaultInitWait        = 180 * time.Second
-	s3UploadMaxAttempts    = 3
+	s3UploadMaxAttempts    = 1
 	s3UploadRetryDelay     = 2 * time.Second
 	uploadInitMaxAttempts  = 3
 	uploadInitRetryDelay   = 2 * time.Second
