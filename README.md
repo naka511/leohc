@@ -20,6 +20,7 @@
 
 - `video-2.0`
 - `video-2.0-fast`
+- `sora-2`
 
 兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
 
@@ -29,10 +30,13 @@
 | --- | --- | --- |
 | `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
 | `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
+| `sora-2` | `sora-2` | Sora 2 视频上游模型 |
 | `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
 | `seedance-2.0-fast` | `seedance-2.0-fast` | 兼容旧调用格式 |
 
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
+
+`sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
 
 这两个模型当前统一按下面的口径调用：
 
@@ -276,6 +280,20 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
+`sora-2` 文生视频示例：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "龟兔赛跑",
+    "model": "sora-2",
+    "duration": 8,
+    "size": "720x1280"
+  }'
+```
+
 ### 2.2 单图生成视频（图生视频）
 
 最简单的写法是传 `image_url`。服务会自动把远程图片上传到 Leonardo，再作为首帧参考：
@@ -292,6 +310,42 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     "image_url": "https://example.com/portrait.jpg"
   }'
 ```
+
+`sora-2` 图生视频最多支持一张起始图，可使用 `image_url`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "武侠视频",
+    "model": "sora-2",
+    "duration": 8,
+    "size": "720x1280",
+    "image_url": "https://example.com/start.png"
+  }'
+```
+
+也可以显式使用 `start_frame`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "武侠视频",
+    "model": "sora-2",
+    "duration": 12,
+    "size": "1280x720",
+    "start_frame": [
+      {
+        "url": "https://example.com/start.png"
+      }
+    ]
+  }'
+```
+
+`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒。
 
 如果需要显式控制首帧和尾帧，也可以写成：
 

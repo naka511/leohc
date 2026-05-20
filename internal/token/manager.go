@@ -405,7 +405,7 @@ func (m *Manager) ReportInvalid(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -419,7 +419,7 @@ func (m *Manager) ReportExhausted(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}
@@ -433,7 +433,7 @@ func (m *Manager) ReportFail(tokenValue string) map[string]interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	t := m.findByValue(tokenValue)
+	t := m.findByIDOrValue(tokenValue)
 	if t == nil {
 		return nil
 	}

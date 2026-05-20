@@ -321,6 +321,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function formatTokenSuccessCounts(token) {
+    const successTotal = Number(token?.success_count || 0);
+    const successTitle = `success count: ${successTotal}`;
+    const successColor = successTotal > 0 ? "#4de2c4" : "#a8bfd8";
+    return `<span style="color:${successColor};" title="${escapeHtml(successTitle)}">${escapeHtml(String(successTotal))}</span>`;
     const standard = Number(token?.seedance_standard_success_count || 0);
     const fast = Number(token?.seedance_fast_success_count || 0);
     const total = Number(token?.success_count || 0);
@@ -1094,6 +1098,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confTokenRotationStrategy = document.getElementById("confTokenRotationStrategy");
   const confTokenSuccessAutoDisableEnabled = document.getElementById("confTokenSuccessAutoDisableEnabled");
   const confTokenSuccessAutoDisableThreshold = document.getElementById("confTokenSuccessAutoDisableThreshold");
+  if (confTokenSuccessAutoDisableEnabled) {
+    const legacyAutoDisableGroup = confTokenSuccessAutoDisableEnabled.closest(".form-group");
+    if (legacyAutoDisableGroup) legacyAutoDisableGroup.style.display = "none";
+  }
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   let confAutoRefreshSweepIntervalMinutes = null;
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
@@ -1326,7 +1334,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           .map(s => String(s).trim().toLowerCase())
           .filter(Boolean),
         token_rotation_strategy: String(confTokenRotationStrategy.value || "round_robin").trim() || "round_robin",
-        token_success_auto_disable_enabled: Boolean(confTokenSuccessAutoDisableEnabled?.checked),
+        token_success_auto_disable_enabled: false,
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
         refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 10),
         auto_refresh_sweep_interval_minutes: Number(confAutoRefreshSweepIntervalMinutes?.value || 1),

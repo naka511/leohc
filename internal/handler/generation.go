@@ -39,7 +39,25 @@ var openAIModelCatalog = []map[string]interface{}{
 			"size":     []string{"1280x720", "720x1280", "960x960"},
 		},
 	},
+	{
+		"id":          "sora-2",
+		"object":      "model",
+		"owned_by":    "leonardo",
+		"description": "Sora 2 video generation",
+		"parameters": map[string]interface{}{
+			"duration": []int{4, 8, 12},
+			"size":     []string{"1280x720", "720x1280"},
+		},
+	},
 }
+
+const (
+	defaultSeedanceVideoDuration = 10
+	defaultSora2VideoDuration    = 8
+	tokenPreparationLeaseTTL     = 5 * time.Minute
+	video2RequiredCredits        = 4550
+	video2FastRequiredCredits    = 3650
+)
 
 // Server holds all dependencies for HTTP handlers.
 type Server struct {
@@ -60,6 +78,8 @@ type Server struct {
 	autoRefreshBusy         map[string]bool
 	autoRefreshLoopStarted  bool
 	autoRefreshSweepRunning bool
+	tokenPrepLeaseMu        sync.Mutex
+	tokenPrepLeases         map[string]time.Time
 }
 
 type generationRetryPolicy struct {
@@ -133,7 +153,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -142,7 +162,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0 or video-2.0-fast", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -177,15 +197,19 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(requestedModelID) == "" {
 		requestedModelID = "video-2.0-fast"
 	}
-	modelID, ok := normalizeSeedanceModelID(requestedModelID)
+	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0 and video-2.0-fast; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, and sora-2; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
-	duration := 10
+	duration := defaultVideoDuration(modelID)
 	if d, ok := data["duration"].(float64); ok {
 		duration = int(d)
+	}
+	if isSora2ModelID(modelID) && !isAllowedSora2Duration(duration) {
+		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
+		return
 	}
 	if duration < 4 || duration > 15 {
 		writeJSON(w, 400, errorResp("duration must be between 4 and 15 seconds", "invalid_request_error"))
@@ -193,7 +217,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse size (e.g. "1280x720")
-	width, height := 1280, 720
+	width, height := defaultVideoSize(modelID)
 	if size, ok := data["size"].(string); ok && size != "" {
 		parts := strings.Split(size, "x")
 		if len(parts) == 2 {
@@ -205,6 +229,18 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
+		writeJSON(w, 400, errorResp("sora-2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
+		return
+	}
+	if isSora2ModelID(modelID) && !isAllowedSora2Size(width, height) {
+		writeJSON(w, 400, errorResp("sora-2 size must be 720x1280 or 1280x720", "invalid_request_error"))
+		return
+	}
+	if isSora2ModelID(modelID) && countSora2StartFrameInputs(data) > 1 {
+		writeJSON(w, 400, errorResp("sora-2 supports at most one uploaded image", "invalid_request_error"))
+		return
+	}
 
 	retryPolicy := s.loadGenerationRetryPolicy()
 	triedTokenIDs := make(map[string]bool)
@@ -214,18 +250,51 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastAttempt int
 
 	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
-		session, usedTokenID := s.getLeonardoSessionForModelExcluding("", triedTokenIDs, modelID)
+		session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease("", triedTokenIDs, modelID)
 		if session == nil {
 			if lastFailure != nil {
 				break
 			}
-			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 503, "No Leonardo tokens available")
-			writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 503, "No tokens available")
+			writeJSON(w, 503, errorResp("No tokens available", "server_error"))
 			return
 		}
 
 		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
 		if err != nil {
+			if isRetryableGuidancePreparationError(err) {
+				failure := &videoGenerationAttemptFailure{
+					StatusCode:      http.StatusBadGateway,
+					Message:         err.Error(),
+					ErrorType:       "server_error",
+					RetryCodeSource: extractRetryCodeSource(err.Error()),
+				}
+				lastFailure = failure
+				lastTokenID = usedTokenID
+				lastSession = session
+				lastAttempt = attempt
+
+				if attempt < retryPolicy.MaxAttempts {
+					triedTokenIDs[usedTokenID] = true
+					if s.TokenMgr != nil && usedTokenID != "" {
+						s.TokenMgr.ReportFail(usedTokenID)
+					}
+					releaseTokenPreparation()
+					log.Printf("[generation] guidance upload failed for token %s on attempt %d/%d; switching token: %v", usedTokenID, attempt, retryPolicy.MaxAttempts, err)
+					if delay := retryPolicy.backoffDelay(attempt); delay > 0 {
+						time.Sleep(delay)
+					}
+					continue
+				}
+				if s.TokenMgr != nil && usedTokenID != "" {
+					s.TokenMgr.ReportFail(usedTokenID)
+				}
+				releaseTokenPreparation()
+				s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, failure.StatusCode, failure.Message)
+				writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
+				return
+			}
+			releaseTokenPreparation()
 			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 400, err.Error())
 			writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
 			return
@@ -233,6 +302,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 
 		submission, failure := s.submitLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
 		if failure == nil {
+			releaseTokenPreparation()
 			go s.trackLeonardoVideoGeneration(session, usedTokenID, modelID, submission.GenerationID, submission.CreatedAt)
 			writeJSON(w, http.StatusAccepted, map[string]interface{}{
 				"id":         submission.GenerationID,
@@ -256,6 +326,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			if s.TokenMgr != nil && usedTokenID != "" {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
+			releaseTokenPreparation()
 			delay := retryPolicy.backoffDelay(attempt)
 			if delay > 0 {
 				time.Sleep(delay)
@@ -270,6 +341,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
 		}
+		releaseTokenPreparation()
 		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, failure.StatusCode, failure.Message)
 		writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
 		return
@@ -288,7 +360,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 503, errorResp("No Leonardo tokens available", "server_error"))
+	writeJSON(w, 503, errorResp("No tokens available", "server_error"))
 }
 
 // HandleVideoGenerationStatus handles GET /v1/video/generations/{id}.
@@ -521,6 +593,48 @@ func (p generationRetryPolicy) backoffDelay(attempt int) time.Duration {
 	return delay
 }
 
+func isRetryableGuidancePreparationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+
+	// Source URL and validation errors are deterministic; switching tokens will
+	// not fix a bad image URL, unsupported content type, or malformed payload.
+	nonRetryableMarkers := []string{
+		"image url returned 400",
+		"image url returned 401",
+		"image url returned 403",
+		"image url returned 404",
+		"image url returned empty body",
+		"image url exceeds",
+		"image url did not return an image content type",
+		"image url must use http or https",
+		"either id or url is required",
+	}
+	for _, marker := range nonRetryableMarkers {
+		if strings.Contains(msg, marker) {
+			return false
+		}
+	}
+
+	retryableStageMarkers := []string{
+		"upload init failed",
+		"s3 upload failed",
+		"wait for init image failed",
+		"wait for staged video asset failed",
+	}
+	for _, marker := range retryableStageMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeRetryMatcher(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	if raw == "" {
@@ -570,12 +684,14 @@ func (s *Server) reloadRuntimeClients() {
 	s.leoSessionMu.Unlock()
 }
 
-func normalizeSeedanceModelID(modelID string) (string, bool) {
+func normalizeVideoModelID(modelID string) (string, bool) {
 	switch strings.TrimSpace(modelID) {
 	case "video-2.0", "seedance-2.0":
 		return "seedance-2.0", true
 	case "video-2.0-fast", "seedance-2.0-fast":
 		return "seedance-2.0-fast", true
+	case "sora-2":
+		return "sora-2", true
 	default:
 		return "", false
 	}
@@ -590,6 +706,46 @@ func publicVideoModelID(modelID string) string {
 	default:
 		return strings.TrimSpace(modelID)
 	}
+}
+
+func isSora2ModelID(modelID string) bool {
+	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+}
+
+func isSeedanceModelID(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "seedance-2.0", "video-2.0", "seedance-2.0-fast", "video-2.0-fast":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultVideoDuration(modelID string) int {
+	if isSora2ModelID(modelID) {
+		return defaultSora2VideoDuration
+	}
+	return defaultSeedanceVideoDuration
+}
+
+func defaultVideoSize(modelID string) (int, int) {
+	if isSora2ModelID(modelID) {
+		return 720, 1280
+	}
+	return 1280, 720
+}
+
+func isAllowedSora2Duration(duration int) bool {
+	switch duration {
+	case 4, 8, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedSora2Size(width int, height int) bool {
+	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
 }
 
 func leonardoVideoResolutionMode(width int, height int) string {
@@ -722,7 +878,7 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 						s.ReqLog.UpdateByGenerationID(generationID, "COMPLETE", 200, finalURL, "video", "")
 						s.ReqLog.UpdateDuration(generationID, elapsed)
 					}
-					s.reportSeedanceGenerationSuccess(usedTokenID, modelID)
+					s.reportVideoGenerationSuccess(usedTokenID, modelID)
 					s.refreshTokenCredits(usedTokenID, session)
 					return
 				}
@@ -899,6 +1055,47 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	}
 
 	return imageRefs, startFrames, endFrames, videoRefs, nil
+}
+
+func hasUnsupportedSora2GuidanceInput(data map[string]interface{}) bool {
+	if data == nil {
+		return false
+	}
+	stringFields := []string{"end_image_url", "video_url"}
+	for _, field := range stringFields {
+		if strings.TrimSpace(toString(data[field])) != "" {
+			return true
+		}
+	}
+	arrayFields := []string{"image_urls", "image_guidance", "end_frame", "video_reference"}
+	for _, field := range arrayFields {
+		if rawItems, ok := data[field].([]interface{}); ok && len(rawItems) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func countSora2StartFrameInputs(data map[string]interface{}) int {
+	if data == nil {
+		return 0
+	}
+	count := 0
+	if strings.TrimSpace(toString(data["image_url"])) != "" {
+		count++
+	}
+	if strings.TrimSpace(toString(data["start_image_url"])) != "" {
+		count++
+	}
+	if rawFrames, ok := data["start_frame"].([]interface{}); ok {
+		for _, item := range rawFrames {
+			entry, _ := item.(map[string]interface{})
+			if strings.TrimSpace(toString(entry["id"])) != "" || strings.TrimSpace(toString(entry["url"])) != "" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func toString(v interface{}) string {
