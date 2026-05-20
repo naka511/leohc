@@ -1,6 +1,9 @@
 package handler
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNormalizeVideoModelIDSupportsSora2(t *testing.T) {
 	modelID, ok := normalizeVideoModelID("sora-2")
@@ -82,5 +85,32 @@ func TestCountSora2StartFrameInputs(t *testing.T) {
 	})
 	if got != 3 {
 		t.Fatalf("count = %d, want 3", got)
+	}
+}
+
+func TestRetryableGuidancePreparationError(t *testing.T) {
+	retryable := []string{
+		`invalid image_urls[0]: upload init failed: graphql request failed: Post "https://api.leonardo.ai/v1/graphql": EOF`,
+		`invalid image_urls[2]: s3 upload failed: s3 upload returned 403: Policy expired`,
+		`invalid start_frame[0]: s3 upload failed: s3 upload failed after 3 attempt(s): read: connection reset by peer`,
+		`invalid video_reference[0]: wait for staged video asset failed: context deadline exceeded`,
+		`invalid image_urls[0]: wait for init image failed: moderation polling returned unknown error`,
+	}
+	for _, msg := range retryable {
+		if !isRetryableGuidancePreparationError(errors.New(msg)) {
+			t.Fatalf("expected retryable guidance preparation error for %q", msg)
+		}
+	}
+
+	nonRetryable := []string{
+		`invalid image_url: image url returned 400`,
+		`invalid image_urls[0]: image url returned 404`,
+		`invalid image_urls[0]: image url did not return an image content type`,
+		`invalid image_urls[0]: either id or url is required`,
+	}
+	for _, msg := range nonRetryable {
+		if isRetryableGuidancePreparationError(errors.New(msg)) {
+			t.Fatalf("expected non-retryable guidance preparation error for %q", msg)
+		}
 	}
 }

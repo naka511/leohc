@@ -54,6 +54,7 @@ var openAIModelCatalog = []map[string]interface{}{
 const (
 	defaultSeedanceVideoDuration = 10
 	defaultSora2VideoDuration    = 8
+	tokenPreparationLeaseTTL     = 5 * time.Minute
 )
 
 // Server holds all dependencies for HTTP handlers.
@@ -75,6 +76,8 @@ type Server struct {
 	autoRefreshBusy         map[string]bool
 	autoRefreshLoopStarted  bool
 	autoRefreshSweepRunning bool
+	tokenPrepLeaseMu        sync.Mutex
+	tokenPrepLeases         map[string]time.Time
 }
 
 type generationRetryPolicy struct {
@@ -245,7 +248,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastAttempt int
 
 	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
-		session, usedTokenID := s.getLeonardoSessionForModelExcluding("", triedTokenIDs, modelID)
+		session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease("", triedTokenIDs, modelID)
 		if session == nil {
 			if lastFailure != nil {
 				break
@@ -257,6 +260,39 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 
 		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
 		if err != nil {
+			if isRetryableGuidancePreparationError(err) {
+				failure := &videoGenerationAttemptFailure{
+					StatusCode:      http.StatusBadGateway,
+					Message:         err.Error(),
+					ErrorType:       "server_error",
+					RetryCodeSource: extractRetryCodeSource(err.Error()),
+				}
+				lastFailure = failure
+				lastTokenID = usedTokenID
+				lastSession = session
+				lastAttempt = attempt
+
+				if attempt < retryPolicy.MaxAttempts {
+					triedTokenIDs[usedTokenID] = true
+					if s.TokenMgr != nil && usedTokenID != "" {
+						s.TokenMgr.ReportFail(usedTokenID)
+					}
+					releaseTokenPreparation()
+					log.Printf("[generation] guidance upload failed for token %s on attempt %d/%d; switching token: %v", usedTokenID, attempt, retryPolicy.MaxAttempts, err)
+					if delay := retryPolicy.backoffDelay(attempt); delay > 0 {
+						time.Sleep(delay)
+					}
+					continue
+				}
+				if s.TokenMgr != nil && usedTokenID != "" {
+					s.TokenMgr.ReportFail(usedTokenID)
+				}
+				releaseTokenPreparation()
+				s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, failure.StatusCode, failure.Message)
+				writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
+				return
+			}
+			releaseTokenPreparation()
 			s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, 400, err.Error())
 			writeJSON(w, 400, errorResp(err.Error(), "invalid_request_error"))
 			return
@@ -264,6 +300,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 
 		submission, failure := s.submitLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
 		if failure == nil {
+			releaseTokenPreparation()
 			go s.trackLeonardoVideoGeneration(session, usedTokenID, modelID, submission.GenerationID, submission.CreatedAt)
 			writeJSON(w, http.StatusAccepted, map[string]interface{}{
 				"id":         submission.GenerationID,
@@ -287,6 +324,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			if s.TokenMgr != nil && usedTokenID != "" {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
+			releaseTokenPreparation()
 			delay := retryPolicy.backoffDelay(attempt)
 			if delay > 0 {
 				time.Sleep(delay)
@@ -301,6 +339,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
 		}
+		releaseTokenPreparation()
 		s.logVideoRequestFailure("openai.video.generate", prompt, modelID, duration, width, height, usedTokenID, session, attempt, failure.StatusCode, failure.Message)
 		writeJSON(w, failure.StatusCode, errorResp(failure.Message, failure.ErrorType))
 		return
@@ -550,6 +589,48 @@ func (p generationRetryPolicy) backoffDelay(attempt int) time.Duration {
 		delay *= 2
 	}
 	return delay
+}
+
+func isRetryableGuidancePreparationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+
+	// Source URL and validation errors are deterministic; switching tokens will
+	// not fix a bad image URL, unsupported content type, or malformed payload.
+	nonRetryableMarkers := []string{
+		"image url returned 400",
+		"image url returned 401",
+		"image url returned 403",
+		"image url returned 404",
+		"image url returned empty body",
+		"image url exceeds",
+		"image url did not return an image content type",
+		"image url must use http or https",
+		"either id or url is required",
+	}
+	for _, marker := range nonRetryableMarkers {
+		if strings.Contains(msg, marker) {
+			return false
+		}
+	}
+
+	retryableStageMarkers := []string{
+		"upload init failed",
+		"s3 upload failed",
+		"wait for init image failed",
+		"wait for staged video asset failed",
+	}
+	for _, marker := range retryableStageMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeRetryMatcher(raw string) string {

@@ -2181,11 +2181,12 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get session from token pool
-	session, usedTokenID := s.getLeonardoSessionForModel(body.TokenID, modelID)
+	session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease(body.TokenID, nil, modelID)
 	if session == nil {
 		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found or no Leonardo tokens available"})
 		return
 	}
+	defer releaseTokenPreparation()
 
 	uploadCache := make(map[string]string)
 
@@ -3306,8 +3307,136 @@ func (s *Server) tokenCanAcceptMoreRunningTasks(tokenID string) bool {
 	return s.tokenRunningGenerationCount(tokenID) < 2
 }
 
+func (s *Server) reserveTokenPreparation(tokenID string) bool {
+	tokenID = strings.TrimSpace(tokenID)
+	if s == nil || tokenID == "" {
+		return false
+	}
+	now := time.Now()
+	s.tokenPrepLeaseMu.Lock()
+	defer s.tokenPrepLeaseMu.Unlock()
+	if s.tokenPrepLeases == nil {
+		s.tokenPrepLeases = make(map[string]time.Time)
+	}
+	for leasedTokenID, expiresAt := range s.tokenPrepLeases {
+		if !expiresAt.After(now) {
+			delete(s.tokenPrepLeases, leasedTokenID)
+		}
+	}
+	if expiresAt, ok := s.tokenPrepLeases[tokenID]; ok && expiresAt.After(now) {
+		return false
+	}
+	s.tokenPrepLeases[tokenID] = now.Add(tokenPreparationLeaseTTL)
+	return true
+}
+
+func (s *Server) releaseTokenPreparation(tokenID string) {
+	tokenID = strings.TrimSpace(tokenID)
+	if s == nil || tokenID == "" {
+		return
+	}
+	s.tokenPrepLeaseMu.Lock()
+	defer s.tokenPrepLeaseMu.Unlock()
+	delete(s.tokenPrepLeases, tokenID)
+}
+
+func (s *Server) tokenHasPreparationLease(tokenID string) bool {
+	tokenID = strings.TrimSpace(tokenID)
+	if s == nil || tokenID == "" {
+		return false
+	}
+	now := time.Now()
+	s.tokenPrepLeaseMu.Lock()
+	defer s.tokenPrepLeaseMu.Unlock()
+	if s.tokenPrepLeases == nil {
+		return false
+	}
+	expiresAt, ok := s.tokenPrepLeases[tokenID]
+	if !ok {
+		return false
+	}
+	if !expiresAt.After(now) {
+		delete(s.tokenPrepLeases, tokenID)
+		return false
+	}
+	return true
+}
+
 func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string]bool) (*leonardo.TokenSession, string) {
 	return s.getLeonardoSessionForModelExcluding(tokenID, excluded, "")
+}
+
+func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID string, excluded map[string]bool, modelID string) (*leonardo.TokenSession, string, func()) {
+	release := func() {}
+	if tokenID != "" {
+		if excluded != nil && excluded[tokenID] {
+			return nil, "", release
+		}
+		if s.tokenHasPreparationLease(tokenID) || !s.reserveTokenPreparation(tokenID) {
+			return nil, "", release
+		}
+		session, usedTokenID := s.getLeonardoSessionForModel(tokenID, modelID)
+		if session == nil || usedTokenID == "" {
+			s.releaseTokenPreparation(tokenID)
+			return nil, "", release
+		}
+		return session, usedTokenID, func() { s.releaseTokenPreparation(usedTokenID) }
+	}
+
+	strategy := "round_robin"
+	if s.Config != nil {
+		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
+	}
+
+	maxAttempts := s.TokenMgr.Count()
+	if maxAttempts < 1 {
+		return nil, "", release
+	}
+	if strings.EqualFold(strategy, "random") {
+		maxAttempts *= 2
+	}
+
+	tried := make(map[string]bool)
+	for i := 0; i < maxAttempts; i++ {
+		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
+		if info == nil {
+			return nil, "", release
+		}
+
+		foundID := strings.TrimSpace(toString(info["id"]))
+		if foundID == "" || tried[foundID] || (excluded != nil && excluded[foundID]) {
+			continue
+		}
+		tried[foundID] = true
+		if s.tokenHasPreparationLease(foundID) || !s.tokenCanAcceptMoreRunningTasks(foundID) {
+			continue
+		}
+		if !s.seedanceTokenCanRunModel(info, modelID) {
+			continue
+		}
+		if !s.reserveTokenPreparation(foundID) {
+			continue
+		}
+
+		rawToken := strings.TrimSpace(toString(info["value"]))
+		if rawToken == "" {
+			s.releaseTokenPreparation(foundID)
+			continue
+		}
+		session := s.getOrCreateLeonardoSession(foundID, rawToken)
+		if session == nil {
+			s.releaseTokenPreparation(foundID)
+			continue
+		}
+		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
+			s.releaseTokenPreparation(foundID)
+			continue
+		}
+		leasedTokenID := foundID
+		return session, leasedTokenID, func() { s.releaseTokenPreparation(leasedTokenID) }
+	}
+	return nil, "", release
 }
 
 func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded map[string]bool, modelID string) (*leonardo.TokenSession, string) {
