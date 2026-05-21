@@ -2445,12 +2445,7 @@ func (s *Server) HandleLeonardoStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else if status.Status == "FAILED" {
-		failureMessage := "generation status FAILED"
-		if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, genID); reasonErr != nil {
-			log.Printf("[status] failed to fetch generation failure reason for %s: %v", genID, reasonErr)
-		} else if strings.TrimSpace(reason) != "" {
-			failureMessage = strings.TrimSpace(reason)
-		}
+		failureMessage := s.waitForGenerationFailureReason(session, genID, "status")
 		if isInsufficientTokensMessage(failureMessage) {
 			s.markTokenExhausted(tokenID, failureMessage)
 		}
@@ -3185,12 +3180,7 @@ func (s *Server) pollGenerationStatus(session *leonardo.TokenSession, genID stri
 
 		case "FAILED":
 			log.Printf("[poll] generation %s failed (%.1fs)", genID, elapsed)
-			failureMessage := "generation status FAILED"
-			if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, genID); reasonErr != nil {
-				log.Printf("[poll] failed to fetch generation failure reason for %s: %v", genID, reasonErr)
-			} else if strings.TrimSpace(reason) != "" {
-				failureMessage = strings.TrimSpace(reason)
-			}
+			failureMessage := s.waitForGenerationFailureReason(session, genID, "poll")
 			if isInsufficientTokensMessage(failureMessage) {
 				s.markTokenExhausted(tokenID, failureMessage)
 			}
@@ -3240,6 +3230,25 @@ func isInsufficientTokensMessage(raw string) bool {
 	return strings.Contains(raw, "insufficient tokens") ||
 		strings.Contains(raw, "insufficient_tokens") ||
 		strings.Contains(normalized, "insufficient_tokens")
+}
+
+func (s *Server) waitForGenerationFailureReason(session *leonardo.TokenSession, generationID string, logPrefix string) string {
+	const attempts = 5
+	const delay = 2 * time.Second
+
+	failureMessage := "generation status FAILED"
+	for attempt := 1; attempt <= attempts; attempt++ {
+		reason, err := s.LeonardoClient.GetGenerationFailureReason(session, generationID)
+		if err != nil {
+			log.Printf("[%s] failed to fetch generation failure reason for %s (%d/%d): %v", logPrefix, generationID, attempt, attempts, err)
+		} else if strings.TrimSpace(reason) != "" {
+			return strings.TrimSpace(reason)
+		}
+		if attempt < attempts {
+			time.Sleep(delay)
+		}
+	}
+	return failureMessage
 }
 
 func (s *Server) markTokenExhausted(tokenID string, reason string) {

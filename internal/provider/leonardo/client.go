@@ -1106,11 +1106,15 @@ func (c *Client) PollGenerationStatus(session *TokenSession, generationID string
 		return &GenerationStatus{ID: generationID, Status: "UNKNOWN"}, nil
 	}
 
-	gen := gqlResp.Data.Generations[0]
-	return &GenerationStatus{
-		ID:     gen.ID,
-		Status: gen.Status,
-	}, nil
+	for _, gen := range gqlResp.Data.Generations {
+		if strings.EqualFold(strings.TrimSpace(gen.ID), strings.TrimSpace(generationID)) {
+			return &GenerationStatus{
+				ID:     gen.ID,
+				Status: gen.Status,
+			}, nil
+		}
+	}
+	return &GenerationStatus{ID: generationID, Status: "UNKNOWN"}, nil
 }
 
 // GetGenerationDetail fetches full details of a completed generation.
@@ -1176,6 +1180,12 @@ func (c *Client) GetGenerationFailureReason(session *TokenSession, generationID 
 	jwt := session.JWT
 	session.mu.RUnlock()
 
+	if reason, err := c.queryGenerationModerationFailureReason(jwt, generationID); err == nil && strings.TrimSpace(reason) != "" {
+		return strings.TrimSpace(reason), nil
+	} else if err != nil {
+		log.Printf("[Leonardo] generation moderation failure probe failed for %s: %v", generationID, err)
+	}
+
 	if reason, err := c.queryGenerationFailureReasonByIntrospection(jwt, generationID); err == nil && strings.TrimSpace(reason) != "" {
 		return strings.TrimSpace(reason), nil
 	} else if err != nil {
@@ -1196,6 +1206,241 @@ func (c *Client) GetGenerationFailureReason(session *TokenSession, generationID 
 	}
 
 	return "", nil
+}
+
+func (c *Client) queryGenerationModerationFailureReason(jwt string, generationID string) (string, error) {
+	classifications, classErr := c.queryGenerationPromptModerationClassifications(jwt, generationID)
+	errorCodes, noteErr := c.queryGenerationNoteFailureCodes(jwt, generationID)
+
+	if len(errorCodes) == 0 && len(classifications) == 0 {
+		if classErr != nil {
+			return "", classErr
+		}
+		if noteErr != nil {
+			return "", noteErr
+		}
+		return "", nil
+	}
+	if len(errorCodes) > 0 && len(classifications) > 0 {
+		return fmt.Sprintf("%s: %s", strings.Join(errorCodes, ", "), strings.Join(classifications, ", ")), nil
+	}
+	if len(errorCodes) > 0 {
+		return strings.Join(errorCodes, ", "), nil
+	}
+	return fmt.Sprintf("PROVIDER_MODERATION_ERROR: %s", strings.Join(classifications, ", ")), nil
+}
+
+func (c *Client) queryGenerationPromptModerationClassifications(jwt string, generationID string) ([]string, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationPromptModerations",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: `query GetGenerationPromptModerations($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    prompt_moderations {
+      moderationClassification
+      __typename
+    }
+    __typename
+  }
+}`,
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []struct {
+				ID                string `json:"id"`
+				Status            string `json:"status"`
+				PromptModerations []struct {
+					ModerationClassification []string `json:"moderationClassification"`
+				} `json:"prompt_moderations"`
+			} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse prompt moderation response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("prompt moderation query error: %s", gqlResp.Errors[0].Message)
+	}
+
+	for _, gen := range gqlResp.Data.Generations {
+		if !strings.EqualFold(strings.TrimSpace(gen.ID), strings.TrimSpace(generationID)) {
+			continue
+		}
+
+		var classifications []string
+		for _, moderation := range gen.PromptModerations {
+			for _, classification := range moderation.ModerationClassification {
+				classification = strings.TrimSpace(classification)
+				if classification != "" {
+					classifications = appendUniqueString(classifications, classification)
+				}
+			}
+		}
+		return classifications, nil
+	}
+
+	return nil, nil
+}
+
+func (c *Client) queryGenerationNoteFailureCodes(jwt string, generationID string) ([]string, error) {
+	errorCodes, err := c.queryGenerationNoteFailureCodesObject(jwt, generationID)
+	if err == nil {
+		return errorCodes, nil
+	}
+	errorCodes, scalarErr := c.queryGenerationNoteFailureCodesScalar(jwt, generationID)
+	if scalarErr == nil {
+		return errorCodes, nil
+	}
+	return nil, err
+}
+
+func (c *Client) queryGenerationNoteFailureCodesObject(jwt string, generationID string) ([]string, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationFailureNotes",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: `query GetGenerationFailureNotes($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    notes {
+      noteType
+      failureReason {
+        errorCode
+      }
+      __typename
+    }
+    __typename
+  }
+}`,
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []struct {
+				ID    string `json:"id"`
+				Notes []struct {
+					NoteType      string `json:"noteType"`
+					FailureReason struct {
+						ErrorCode string `json:"errorCode"`
+					} `json:"failureReason"`
+				} `json:"notes"`
+			} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse failure notes response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("failure notes query error: %s", gqlResp.Errors[0].Message)
+	}
+	for _, gen := range gqlResp.Data.Generations {
+		if !strings.EqualFold(strings.TrimSpace(gen.ID), strings.TrimSpace(generationID)) {
+			continue
+		}
+		var errorCodes []string
+		for _, note := range gen.Notes {
+			if reason := strings.TrimSpace(note.FailureReason.ErrorCode); reason != "" {
+				errorCodes = appendUniqueString(errorCodes, reason)
+			}
+		}
+		return errorCodes, nil
+	}
+	return nil, nil
+}
+
+func (c *Client) queryGenerationNoteFailureCodesScalar(jwt string, generationID string) ([]string, error) {
+	gqlReq := graphqlRequest{
+		OperationName: "GetGenerationFailureNotesScalar",
+		Variables: map[string]interface{}{
+			"where": map[string]interface{}{
+				"id": map[string]interface{}{
+					"_in": []string{generationID},
+				},
+			},
+		},
+		Query: `query GetGenerationFailureNotesScalar($where: generations_bool_exp = {}) {
+  generations(where: $where) {
+    id
+    status
+    notes {
+      noteType
+      failureReason
+      __typename
+    }
+    __typename
+  }
+}`,
+	}
+
+	body, err := c.doGraphQL(jwt, gqlReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var gqlResp struct {
+		Data struct {
+			Generations []struct {
+				ID    string `json:"id"`
+				Notes []struct {
+					NoteType      string      `json:"noteType"`
+					FailureReason interface{} `json:"failureReason"`
+				} `json:"notes"`
+			} `json:"generations"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse scalar failure notes response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("scalar failure notes query error: %s", gqlResp.Errors[0].Message)
+	}
+	for _, gen := range gqlResp.Data.Generations {
+		if !strings.EqualFold(strings.TrimSpace(gen.ID), strings.TrimSpace(generationID)) {
+			continue
+		}
+		var errorCodes []string
+		for _, note := range gen.Notes {
+			if reason := extractMeaningfulFailureText(note.FailureReason); reason != "" {
+				errorCodes = appendUniqueString(errorCodes, reason)
+			}
+		}
+		return errorCodes, nil
+	}
+	return nil, nil
 }
 
 func (c *Client) queryGenerationFailureReasonByIntrospection(jwt string, generationID string) (string, error) {
@@ -1479,6 +1724,19 @@ func extractMeaningfulFailureText(value interface{}) string {
 		}
 	}
 	return ""
+}
+
+func appendUniqueString(items []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return items
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return items
+		}
+	}
+	return append(items, value)
 }
 
 func min(a, b int) int {
