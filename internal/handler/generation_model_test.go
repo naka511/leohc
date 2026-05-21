@@ -18,6 +18,19 @@ func TestNormalizeVideoModelIDSupportsSora2(t *testing.T) {
 	}
 }
 
+func TestNormalizeVideoModelIDSupportsKlingO3(t *testing.T) {
+	modelID, ok := normalizeVideoModelID("kling-o3")
+	if !ok {
+		t.Fatal("normalizeVideoModelID did not accept kling-o3")
+	}
+	if modelID != "kling-video-o-3" {
+		t.Fatalf("modelID = %q, want kling-video-o-3", modelID)
+	}
+	if publicVideoModelID(modelID) != "kling-o3" {
+		t.Fatalf("publicVideoModelID(%q) = %q, want kling-o3", modelID, publicVideoModelID(modelID))
+	}
+}
+
 func TestSora2DefaultsMatchTextToVideoCapture(t *testing.T) {
 	if got := defaultVideoDuration("sora-2"); got != 8 {
 		t.Fatalf("defaultVideoDuration(sora-2) = %d, want 8", got)
@@ -25,6 +38,19 @@ func TestSora2DefaultsMatchTextToVideoCapture(t *testing.T) {
 	width, height := defaultVideoSize("sora-2")
 	if width != 720 || height != 1280 {
 		t.Fatalf("defaultVideoSize(sora-2) = %dx%d, want 720x1280", width, height)
+	}
+}
+
+func TestKlingO3DefaultsMatchTextToVideoCapture(t *testing.T) {
+	if got := defaultVideoDuration("kling-video-o-3"); got != 3 {
+		t.Fatalf("defaultVideoDuration(kling-video-o-3) = %d, want 3", got)
+	}
+	width, height := defaultVideoSize("kling-video-o-3")
+	if width != 1080 || height != 1920 {
+		t.Fatalf("defaultVideoSize(kling-video-o-3) = %dx%d, want 1080x1920", width, height)
+	}
+	if got := leonardoVideoResolutionMode("kling-video-o-3", width, height); got != "RESOLUTION_1080" {
+		t.Fatalf("leonardoVideoResolutionMode(kling-video-o-3) = %q, want RESOLUTION_1080", got)
 	}
 }
 
@@ -47,6 +73,52 @@ func TestSora2AllowedDurationsAndSizes(t *testing.T) {
 	}
 	if isAllowedSora2Size(960, 960) {
 		t.Fatal("960x960 should not be allowed for sora-2")
+	}
+}
+
+func TestKlingO3AllowedDurationsSizesAndGuidance(t *testing.T) {
+	if !isAllowedKlingO3Duration(3) {
+		t.Fatal("duration 3 should be allowed for kling-o3")
+	}
+	if isAllowedKlingO3Duration(4) {
+		t.Fatal("duration 4 should not be allowed for kling-o3")
+	}
+	if !isAllowedKlingO3Size(1080, 1920) {
+		t.Fatal("1080x1920 should be allowed for kling-o3")
+	}
+	if !isAllowedKlingO3Size(1920, 1080) {
+		t.Fatal("1920x1080 should be allowed for kling-o3")
+	}
+	if isAllowedKlingO3Size(1280, 720) {
+		t.Fatal("1280x720 should not be allowed for kling-o3")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"prompt": "text only"}) {
+		t.Fatal("text-only request should not have unsupported kling-o3 guidance input")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"image_url": "https://example.com/a.png"}) {
+		t.Fatal("image_url should be allowed as Kling O3 image-reference guidance")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"image_guidance": []interface{}{map[string]interface{}{"id": "img"}}}) {
+		t.Fatal("image_guidance should be allowed as Kling O3 image-reference guidance")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"start_frame": []interface{}{map[string]interface{}{"id": "img"}}}) {
+		t.Fatal("start_frame should be allowed as Kling O3 start-frame guidance")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"end_frame": []interface{}{map[string]interface{}{"id": "img"}}}) {
+		t.Fatal("end_frame should be allowed as Kling O3 end-frame guidance")
+	}
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{
+		"image_guidance": []interface{}{
+			map[string]interface{}{"id": "img-1"},
+			map[string]interface{}{"id": "img-2"},
+			map[string]interface{}{"id": "img-3"},
+			map[string]interface{}{"id": "img-4"},
+		},
+	}) {
+		t.Fatal("multiple image_guidance entries should be allowed as Kling O3 image-reference guidance")
+	}
+	if !hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"video_reference": []interface{}{map[string]interface{}{"id": "vid"}}}) {
+		t.Fatal("video_reference should be detected as unsupported Kling O3 guidance input")
 	}
 }
 
@@ -126,6 +198,7 @@ func TestRequiredCreditsForVideoModel(t *testing.T) {
 		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "sora-2", want: 0, ok: false},
+		{modelID: "kling-o3", want: 0, ok: false},
 	}
 	for _, tt := range tests {
 		got, ok := requiredCreditsForVideoModel(tt.modelID)

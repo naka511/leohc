@@ -49,11 +49,23 @@ var openAIModelCatalog = []map[string]interface{}{
 			"size":     []string{"1280x720", "720x1280"},
 		},
 	},
+	{
+		"id":          "kling-o3",
+		"object":      "model",
+		"owned_by":    "leonardo",
+		"description": "Kling O3 video generation",
+		"aliases":     []string{"kling-video-o-3"},
+		"parameters": map[string]interface{}{
+			"duration": []int{3},
+			"size":     []string{"1080x1920", "1920x1080"},
+		},
+	},
 }
 
 const (
 	defaultSeedanceVideoDuration = 10
 	defaultSora2VideoDuration    = 8
+	defaultKlingO3VideoDuration  = 3
 	tokenPreparationLeaseTTL     = 5 * time.Minute
 	video2RequiredCredits        = 4550
 	video2FastRequiredCredits    = 3650
@@ -153,7 +165,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or kling-o3", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -162,7 +174,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, or sora-2", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or kling-o3", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -199,7 +211,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, and sora-2; seedance-2.0 and seedance-2.0-fast are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora-2, and kling-o3; seedance-2.0, seedance-2.0-fast, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
@@ -211,9 +223,15 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
 		return
 	}
-	if duration < 4 || duration > 15 {
-		writeJSON(w, 400, errorResp("duration must be between 4 and 15 seconds", "invalid_request_error"))
+	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Duration(duration) {
+		writeJSON(w, 400, errorResp("kling-o3 duration must be 3 seconds", "invalid_request_error"))
 		return
+	}
+	if duration < 4 || duration > 15 {
+		if !isKlingO3ModelID(modelID) {
+			writeJSON(w, 400, errorResp("duration must be between 4 and 15 seconds", "invalid_request_error"))
+			return
+		}
 	}
 
 	// Parse size (e.g. "1280x720")
@@ -228,6 +246,14 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				height = h
 			}
 		}
+	}
+	if isKlingO3ModelID(modelID) && hasUnsupportedKlingO3GuidanceInput(data) {
+		writeJSON(w, 400, errorResp("kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only", "invalid_request_error"))
+		return
+	}
+	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Size(width, height) {
+		writeJSON(w, 400, errorResp("kling-o3 size must be 1080x1920 or 1920x1080", "invalid_request_error"))
+		return
 	}
 	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
 		writeJSON(w, 400, errorResp("sora-2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
@@ -260,7 +286,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session)
+		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session, modelID)
 		if err != nil {
 			if isRetryableGuidancePreparationError(err) {
 				failure := &videoGenerationAttemptFailure{
@@ -692,6 +718,8 @@ func normalizeVideoModelID(modelID string) (string, bool) {
 		return "seedance-2.0-fast", true
 	case "sora-2":
 		return "sora-2", true
+	case "kling-o3", "kling-video-o-3":
+		return "kling-video-o-3", true
 	default:
 		return "", false
 	}
@@ -703,6 +731,8 @@ func publicVideoModelID(modelID string) string {
 		return "video-2.0"
 	case "seedance-2.0-fast", "video-2.0-fast":
 		return "video-2.0-fast"
+	case "kling-video-o-3", "kling-o3":
+		return "kling-o3"
 	default:
 		return strings.TrimSpace(modelID)
 	}
@@ -710,6 +740,15 @@ func publicVideoModelID(modelID string) string {
 
 func isSora2ModelID(modelID string) bool {
 	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+}
+
+func isKlingO3ModelID(modelID string) bool {
+	switch strings.TrimSpace(modelID) {
+	case "kling-video-o-3", "kling-o3":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSeedanceModelID(modelID string) bool {
@@ -725,12 +764,18 @@ func defaultVideoDuration(modelID string) int {
 	if isSora2ModelID(modelID) {
 		return defaultSora2VideoDuration
 	}
+	if isKlingO3ModelID(modelID) {
+		return defaultKlingO3VideoDuration
+	}
 	return defaultSeedanceVideoDuration
 }
 
 func defaultVideoSize(modelID string) (int, int) {
 	if isSora2ModelID(modelID) {
 		return 720, 1280
+	}
+	if isKlingO3ModelID(modelID) {
+		return 1080, 1920
 	}
 	return 1280, 720
 }
@@ -748,7 +793,31 @@ func isAllowedSora2Size(width int, height int) bool {
 	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
 }
 
-func leonardoVideoResolutionMode(width int, height int) string {
+func isAllowedKlingO3Duration(duration int) bool {
+	return duration == defaultKlingO3VideoDuration
+}
+
+func isAllowedKlingO3Size(width int, height int) bool {
+	return (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
+}
+
+func hasUnsupportedKlingO3GuidanceInput(data map[string]interface{}) bool {
+	if data == nil {
+		return false
+	}
+	if strings.TrimSpace(toString(data["video_url"])) != "" {
+		return true
+	}
+	if rawItems, ok := data["video_reference"].([]interface{}); ok && len(rawItems) > 0 {
+		return true
+	}
+	return false
+}
+
+func leonardoVideoResolutionMode(modelID string, width int, height int) string {
+	if isKlingO3ModelID(modelID) && isAllowedKlingO3Size(width, height) {
+		return "RESOLUTION_1080"
+	}
 	return "RESOLUTION_720"
 }
 
@@ -767,7 +836,7 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 		Public: true,
 		Params: leonardo.GenerateParams{
 			Prompt:         prompt,
-			Mode:           leonardoVideoResolutionMode(width, height),
+			Mode:           leonardoVideoResolutionMode(modelID, width, height),
 			Duration:       duration,
 			Width:          width,
 			Height:         height,
@@ -887,7 +956,7 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 	s.refreshTokenCredits(usedTokenID, session)
 }
 
-func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {
+func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession, modelID string) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {
 	uploadCache := make(map[string]string)
 
 	var imageRefs []leonardo.ImageRef
@@ -912,7 +981,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("invalid image_url: %w", err)
 		}
-		if hasVideoInput {
+		if hasVideoInput || isKlingO3ModelID(modelID) {
 			imageRefs = append(imageRefs, leonardo.ImageRef{
 				ID:       imageID,
 				Type:     "UPLOADED",

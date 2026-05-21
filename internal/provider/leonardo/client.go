@@ -750,8 +750,20 @@ func inferResolutionMode(width int, height int) string {
 	return "RESOLUTION_720"
 }
 
+func inferResolutionModeForModel(modelID string, width int, height int) string {
+	if isKlingO3Model(modelID) {
+		return "RESOLUTION_1080"
+	}
+	return inferResolutionMode(width, height)
+}
+
 func isSora2Model(modelID string) bool {
 	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+}
+
+func isKlingO3Model(modelID string) bool {
+	modelID = strings.TrimSpace(modelID)
+	return modelID == "kling-video-o-3" || modelID == "kling-o3"
 }
 
 func isAllowedSora2Duration(duration int) bool {
@@ -765,6 +777,14 @@ func isAllowedSora2Duration(duration int) bool {
 
 func isAllowedSora2Size(width int, height int) bool {
 	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
+}
+
+func isAllowedKlingO3Duration(duration int) bool {
+	return duration == 3
+}
+
+func isAllowedKlingO3Size(width int, height int) bool {
+	return (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
 }
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
@@ -827,15 +847,22 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
+	if strings.EqualFold(genReq.Model, "kling-o3") {
+		genReq.Model = "kling-video-o-3"
+	}
 	if genReq.Params.Width == 0 {
-		if isSora2Model(genReq.Model) {
+		if isKlingO3Model(genReq.Model) {
+			genReq.Params.Width = 1080
+		} else if isSora2Model(genReq.Model) {
 			genReq.Params.Width = 720
 		} else {
 			genReq.Params.Width = 1280
 		}
 	}
 	if genReq.Params.Height == 0 {
-		if isSora2Model(genReq.Model) {
+		if isKlingO3Model(genReq.Model) {
+			genReq.Params.Height = 1920
+		} else if isSora2Model(genReq.Model) {
 			genReq.Params.Height = 1280
 		} else {
 			genReq.Params.Height = 720
@@ -843,13 +870,16 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	}
 	// Set defaults
 	if genReq.Params.Mode == "" {
-		genReq.Params.Mode = inferResolutionMode(genReq.Params.Width, genReq.Params.Height)
+		genReq.Params.Mode = inferResolutionModeForModel(genReq.Model, genReq.Params.Width, genReq.Params.Height)
 	}
 	if genReq.Params.Quantity == 0 {
 		genReq.Params.Quantity = 1
 	}
 	if genReq.Params.Duration == 0 && isSora2Model(genReq.Model) {
 		genReq.Params.Duration = 8
+	}
+	if genReq.Params.Duration == 0 && isKlingO3Model(genReq.Model) {
+		genReq.Params.Duration = 3
 	}
 	if genReq.Params.Duration == 0 {
 		genReq.Params.Duration = 4
@@ -868,6 +898,17 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 			return nil, fmt.Errorf("sora-2 supports at most one uploaded image")
 		}
 	}
+	if isKlingO3Model(genReq.Model) {
+		if !isAllowedKlingO3Duration(genReq.Params.Duration) {
+			return nil, fmt.Errorf("kling-o3 duration must be 3 seconds")
+		}
+		if !isAllowedKlingO3Size(genReq.Params.Width, genReq.Params.Height) {
+			return nil, fmt.Errorf("kling-o3 size must be 1080x1920 or 1920x1080")
+		}
+		if len(genReq.Params.VideoRefs) > 0 {
+			return nil, fmt.Errorf("kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only")
+		}
+	}
 
 	params := map[string]interface{}{}
 	if isSora2Model(genReq.Model) {
@@ -878,6 +919,16 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 			"quantity": genReq.Params.Quantity,
 			"prompt":   genReq.Params.Prompt,
 			"mode":     genReq.Params.Mode,
+		}
+	} else if isKlingO3Model(genReq.Model) {
+		params = map[string]interface{}{
+			"height":           genReq.Params.Height,
+			"width":            genReq.Params.Width,
+			"duration":         genReq.Params.Duration,
+			"mode":             genReq.Params.Mode,
+			"motion_has_audio": genReq.Params.MotionHasAudio,
+			"quantity":         genReq.Params.Quantity,
+			"prompt":           genReq.Params.Prompt,
 		}
 	} else {
 		params = map[string]interface{}{

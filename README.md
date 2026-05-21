@@ -21,6 +21,7 @@
 - `video-2.0`
 - `video-2.0-fast`
 - `sora-2`
+- `kling-o3`
 
 兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
 
@@ -31,14 +32,17 @@
 | `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
 | `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
 | `sora-2` | `sora-2` | Sora 2 视频上游模型 |
+| `kling-o3` | `kling-video-o-3` | Kling O3 视频上游模型 |
 | `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
 | `seedance-2.0-fast` | `seedance-2.0-fast` | 兼容旧调用格式 |
+| `kling-video-o-3` | `kling-video-o-3` | 兼容上游模型名 |
 
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
 `sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
+`kling-o3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频和首尾帧模式。
 
-这两个模型当前统一按下面的口径调用：
+`video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：
 
 - 支持尺寸（比例）：`9:16`、`16:9`、`1:1`
 - 默认分辨率：`720p`
@@ -294,6 +298,20 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
+`kling-o3` 文生视频示例：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "龟兔赛跑",
+    "model": "kling-o3",
+    "duration": 3,
+    "size": "1080x1920"
+  }'
+```
+
 ### 2.2 单图生成视频（图生视频）
 
 最简单的写法是传 `image_url`。服务会自动把远程图片上传到 Leonardo，再作为首帧参考：
@@ -326,7 +344,62 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-也可以显式使用 `start_frame`：
+`kling-o3` 图生视频同样可以使用 `image_url`，服务会把它转换为 Leonardo 上游的 `guidances.image_reference`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "猫咪跳舞",
+    "model": "kling-o3",
+    "duration": 3,
+    "size": "1080x1920",
+    "image_url": "https://example.com/cat.png"
+  }'
+```
+
+`kling-o3` 多图生视频可使用 `image_guidance`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "动物世界",
+    "model": "kling-o3",
+    "duration": 3,
+    "size": "1080x1920",
+    "image_guidance": [
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"},
+      {"id": "b3941f10-34ab-4535-8725-ff44a3f2ca21"},
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
+    ]
+  }'
+```
+
+`kling-o3` 首尾帧模式可使用 `start_frame` 和 `end_frame`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "从图一过渡到图二",
+    "model": "kling-o3",
+    "duration": 3,
+    "size": "1080x1920",
+    "start_frame": [
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"}
+    ],
+    "end_frame": [
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"}
+    ]
+  }'
+```
+
+`sora-2` 也可以显式使用 `start_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
