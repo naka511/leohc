@@ -763,7 +763,7 @@ func isSora2Model(modelID string) bool {
 
 func isKlingO3Model(modelID string) bool {
 	modelID = strings.TrimSpace(modelID)
-	return modelID == "kling-video-o-3" || modelID == "kling-o3"
+	return modelID == "kling-video-o-3" || modelID == "kling-o3" || modelID == "ko3"
 }
 
 func isAllowedSora2Duration(duration int) bool {
@@ -855,7 +855,7 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
-	if strings.EqualFold(genReq.Model, "kling-o3") {
+	if strings.EqualFold(genReq.Model, "kling-o3") || strings.EqualFold(genReq.Model, "ko3") {
 		genReq.Model = "kling-video-o-3"
 	}
 	isKlingO3VideoRefMode := isKlingO3Model(genReq.Model) && len(genReq.Params.VideoRefs) > 0
@@ -918,17 +918,17 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if isKlingO3Model(genReq.Model) {
 		if isKlingO3VideoRefMode {
 			if !isAllowedKlingO3VideoRefDuration(genReq.Params.Duration) {
-				return nil, fmt.Errorf("kling-o3 video reference duration must be between 3 and 15 seconds")
+				return nil, fmt.Errorf("ko3 video reference duration must be between 3 and 15 seconds")
 			}
 			if !isAllowedKlingO3VideoRefSize(genReq.Params.Width, genReq.Params.Height) {
-				return nil, fmt.Errorf("kling-o3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080")
+				return nil, fmt.Errorf("ko3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080")
 			}
 		} else {
 			if !isAllowedKlingO3Duration(genReq.Params.Duration) {
-				return nil, fmt.Errorf("kling-o3 duration must be between 3 and 15 seconds")
+				return nil, fmt.Errorf("ko3 duration must be between 3 and 15 seconds")
 			}
 			if !isAllowedKlingO3Size(genReq.Params.Width, genReq.Params.Height) {
-				return nil, fmt.Errorf("kling-o3 size must be 1440x1440, 1080x1920, or 1920x1080")
+				return nil, fmt.Errorf("ko3 size must be 1440x1440, 1080x1920, or 1920x1080")
 			}
 		}
 	}

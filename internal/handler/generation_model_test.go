@@ -19,15 +19,18 @@ func TestNormalizeVideoModelIDSupportsSora2(t *testing.T) {
 }
 
 func TestNormalizeVideoModelIDSupportsKlingO3(t *testing.T) {
-	modelID, ok := normalizeVideoModelID("kling-o3")
+	modelID, ok := normalizeVideoModelID("ko3")
 	if !ok {
-		t.Fatal("normalizeVideoModelID did not accept kling-o3")
+		t.Fatal("normalizeVideoModelID did not accept ko3")
 	}
 	if modelID != "kling-video-o-3" {
 		t.Fatalf("modelID = %q, want kling-video-o-3", modelID)
 	}
-	if publicVideoModelID(modelID) != "kling-o3" {
-		t.Fatalf("publicVideoModelID(%q) = %q, want kling-o3", modelID, publicVideoModelID(modelID))
+	if publicVideoModelID(modelID) != "ko3" {
+		t.Fatalf("publicVideoModelID(%q) = %q, want ko3", modelID, publicVideoModelID(modelID))
+	}
+	if aliasModelID, ok := normalizeVideoModelID("kling-o3"); !ok || aliasModelID != "kling-video-o-3" {
+		t.Fatalf("normalizeVideoModelID(kling-o3) = %q, %v; want kling-video-o-3, true", aliasModelID, ok)
 	}
 }
 
@@ -219,6 +222,7 @@ func TestRequiredCreditsForVideoModel(t *testing.T) {
 		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "sora-2", want: 0, ok: false},
+		{modelID: "ko3", want: 0, ok: false},
 		{modelID: "kling-o3", want: 0, ok: false},
 	}
 	for _, tt := range tests {

@@ -50,11 +50,11 @@ var openAIModelCatalog = []map[string]interface{}{
 		},
 	},
 	{
-		"id":          "kling-o3",
+		"id":          "ko3",
 		"object":      "model",
 		"owned_by":    "leonardo",
 		"description": "Kling O3 video generation",
-		"aliases":     []string{"kling-video-o-3"},
+		"aliases":     []string{"kling-o3", "kling-video-o-3"},
 		"parameters": map[string]interface{}{
 			"duration": []int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
 			"size":     []string{"1440x1440", "1080x1920", "1920x1080", "0x0"},
@@ -166,7 +166,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or kling-o3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -175,7 +175,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or kling-o3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -212,7 +212,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora-2, and kling-o3; seedance-2.0, seedance-2.0-fast, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora-2, and ko3; seedance-2.0, seedance-2.0-fast, kling-o3, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
@@ -262,7 +262,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		height = int(h)
 	}
 	if isKlingO3ModelID(modelID) && hasUnsupportedKlingO3GuidanceInput(data) {
-		writeJSON(w, 400, errorResp("kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("ko3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only", "invalid_request_error"))
 		return
 	}
 	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Size(width, height, klingO3VideoRefMode) {
@@ -732,7 +732,7 @@ func normalizeVideoModelID(modelID string) (string, bool) {
 		return "seedance-2.0-fast", true
 	case "sora-2":
 		return "sora-2", true
-	case "kling-o3", "kling-video-o-3":
+	case "ko3", "kling-o3", "kling-video-o-3":
 		return "kling-video-o-3", true
 	default:
 		return "", false
@@ -745,8 +745,8 @@ func publicVideoModelID(modelID string) string {
 		return "video-2.0"
 	case "seedance-2.0-fast", "video-2.0-fast":
 		return "video-2.0-fast"
-	case "kling-video-o-3", "kling-o3":
-		return "kling-o3"
+	case "kling-video-o-3", "kling-o3", "ko3":
+		return "ko3"
 	default:
 		return strings.TrimSpace(modelID)
 	}
@@ -758,7 +758,7 @@ func isSora2ModelID(modelID string) bool {
 
 func isKlingO3ModelID(modelID string) bool {
 	switch strings.TrimSpace(modelID) {
-	case "kling-video-o-3", "kling-o3":
+	case "kling-video-o-3", "kling-o3", "ko3":
 		return true
 	default:
 		return false
@@ -812,7 +812,7 @@ func isAllowedKlingO3Duration(duration int, videoReferenceMode bool) bool {
 }
 
 func klingO3DurationError(videoReferenceMode bool) string {
-	return "kling-o3 duration must be between 3 and 15 seconds"
+	return "ko3 duration must be between 3 and 15 seconds"
 }
 
 func isAllowedKlingO3Size(width int, height int, videoReferenceMode bool) bool {
@@ -824,9 +824,9 @@ func isAllowedKlingO3Size(width int, height int, videoReferenceMode bool) bool {
 
 func klingO3SizeError(videoReferenceMode bool) string {
 	if videoReferenceMode {
-		return "kling-o3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080"
+		return "ko3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080"
 	}
-	return "kling-o3 size must be 1440x1440, 1080x1920, or 1920x1080"
+	return "ko3 size must be 1440x1440, 1080x1920, or 1920x1080"
 }
 
 func hasVideoReferenceInput(data map[string]interface{}) bool {

@@ -21,7 +21,7 @@
 - `video-2.0`
 - `video-2.0-fast`
 - `sora-2`
-- `kling-o3`
+- `ko3`
 
 兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
 
@@ -32,7 +32,8 @@
 | `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
 | `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
 | `sora-2` | `sora-2` | Sora 2 视频上游模型 |
-| `kling-o3` | `kling-video-o-3` | Kling O3 视频上游模型 |
+| `ko3` | `kling-video-o-3` | Kling O3 视频上游模型 |
+| `kling-o3` | `kling-video-o-3` | 兼容旧调用格式 |
 | `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
 | `seedance-2.0-fast` | `seedance-2.0-fast` | 兼容旧调用格式 |
 | `kling-video-o-3` | `kling-video-o-3` | 兼容上游模型名 |
@@ -40,7 +41,7 @@
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
 `sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
-`kling-o3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
+`ko3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
 
 `video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：
 
@@ -298,7 +299,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 文生视频示例：
+`ko3` 文生视频示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -306,7 +307,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "龟兔赛跑",
-    "model": "kling-o3",
+    "model": "ko3",
     "duration": 3,
     "size": "1080x1920"
   }'
@@ -344,7 +345,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 图生视频同样可以使用 `image_url`，服务会把它转换为 Leonardo 上游的 `guidances.image_reference`：
+`ko3` 图生视频同样可以使用 `image_url`，服务会把它转换为 Leonardo 上游的 `guidances.image_reference`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -352,14 +353,14 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "猫咪跳舞",
-    "model": "kling-o3",
+    "model": "ko3",
     "duration": 3,
     "size": "1080x1920",
     "image_url": "https://example.com/cat.png"
   }'
 ```
 
-`kling-o3` 多图生视频可使用 `image_guidance`：
+`ko3` 多图生视频可使用 `image_guidance`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -367,7 +368,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "动物世界",
-    "model": "kling-o3",
+    "model": "ko3",
     "duration": 3,
     "size": "1080x1920",
     "image_guidance": [
@@ -379,7 +380,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 首尾帧模式可使用 `start_frame` 和 `end_frame`：
+`ko3` 首尾帧模式可使用 `start_frame` 和 `end_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -387,7 +388,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "从图一过渡到图二",
-    "model": "kling-o3",
+    "model": "ko3",
     "duration": 3,
     "size": "1080x1920",
     "start_frame": [
@@ -399,7 +400,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 参考视频生视频可使用 `video_reference`。带视频参考时不需要传 `size` 和 `duration`；服务会默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`、`duration=5`。如需覆盖，也可以显式传 `size` 或 `width` / `height`，并用 `duration` 控制生成时长：
+`ko3` 参考视频生视频可使用 `video_reference`。带视频参考时不需要传 `size` 和 `duration`；服务会默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`、`duration=5`。如需覆盖，也可以显式传 `size` 或 `width` / `height`，并用 `duration` 控制生成时长：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -407,7 +408,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "把视频中的香水替换成牙膏",
-    "model": "kling-o3",
+    "model": "ko3",
     "video_reference": [
       {
         "id": "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9",
@@ -417,7 +418,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样不需要传 `size` 和 `duration`：
+`ko3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样不需要传 `size` 和 `duration`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -425,7 +426,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "把视频中的香水替换图片的小熊",
-    "model": "kling-o3",
+    "model": "ko3",
     "image_guidance": [
       {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
     ],
@@ -438,7 +439,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 多图 + 视频参考也使用同一组字段，只需要在 `image_guidance` 中传多张图：
+`ko3` 多图 + 视频参考也使用同一组字段，只需要在 `image_guidance` 中传多张图：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -446,7 +447,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "用多张图片替换视频主体",
-    "model": "kling-o3",
+    "model": "ko3",
     "image_guidance": [
       {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"},
       {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},

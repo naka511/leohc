@@ -188,7 +188,7 @@ func TestGenerateBuildsKlingO3TextToVideoPayload(t *testing.T) {
 	}
 
 	result, err := client.Generate(session, &GenerateRequest{
-		Model:  "kling-video-o-3",
+		Model:  "ko3",
 		Public: true,
 		Params: GenerateParams{
 			Prompt:         "龟兔赛跑",
