@@ -583,6 +583,77 @@ func TestGenerateBuildsKlingO3VideoReferencePayload(t *testing.T) {
 	}
 }
 
+func TestGenerateBuildsKlingO3VideoReferencePayloadWithDefaults(t *testing.T) {
+	var requestBody string
+	client := NewClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			requestBody = string(body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"generate":{"apiCreditCost":10,"generationId":"gen-kling-o3-video-defaults"}}}`)),
+			}, nil
+		}),
+	}
+	session := &TokenSession{
+		JWT:       "jwt",
+		JWTExpiry: time.Now().Add(time.Hour),
+	}
+
+	_, err := client.Generate(session, &GenerateRequest{
+		Model:  "kling-video-o-3",
+		Public: true,
+		Params: GenerateParams{
+			Prompt:         "参考视频生成视频",
+			Quantity:       1,
+			MotionHasAudio: true,
+			VideoRefs: []VideoRef{{
+				ID:       "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9",
+				Type:     "UPLOADED",
+				Duration: 7.918005,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+
+	payload := mustJSONMap(t, requestBody)
+	request := payload["variables"].(map[string]interface{})["request"].(map[string]interface{})
+	params := request["parameters"].(map[string]interface{})
+	want := map[string]interface{}{
+		"height":           float64(0),
+		"width":            float64(0),
+		"duration":         float64(5),
+		"mode":             "RESOLUTION_1080",
+		"motion_has_audio": true,
+		"quantity":         float64(1),
+		"prompt":           "参考视频生成视频",
+	}
+	for key, wantValue := range want {
+		if params[key] != wantValue {
+			t.Fatalf("params[%s] = %v, want %v", key, params[key], wantValue)
+		}
+	}
+	guidances := params["guidances"].(map[string]interface{})
+	videoRefs := guidances["video_reference_base"].([]interface{})
+	if len(videoRefs) != 1 {
+		t.Fatalf("video_reference_base length = %d, want 1", len(videoRefs))
+	}
+	video := videoRefs[0].(map[string]interface{})["video"].(map[string]interface{})
+	if video["id"] != "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9" {
+		t.Fatalf("video id = %v", video["id"])
+	}
+	if video["duration"] != 7.918005 {
+		t.Fatalf("video duration = %v, want 7.918005", video["duration"])
+	}
+}
+
 func TestGenerateBuildsKlingO3ImageAndVideoReferencePayload(t *testing.T) {
 	var requestBody string
 	client := NewClient("")

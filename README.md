@@ -399,7 +399,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 参考视频生视频可使用 `video_reference`。这种模式默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`，也可以显式传 `size` 或 `width` / `height` 覆盖尺寸，并用 `duration` 控制生成时长：
+`kling-o3` 参考视频生视频可使用 `video_reference`。带视频参考时不需要传 `size` 和 `duration`；服务会默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`、`duration=5`。如需覆盖，也可以显式传 `size` 或 `width` / `height`，并用 `duration` 控制生成时长：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -408,7 +408,6 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -d '{
     "prompt": "把视频中的香水替换成牙膏",
     "model": "kling-o3",
-    "duration": 5,
     "video_reference": [
       {
         "id": "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9",
@@ -418,7 +417,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`kling-o3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样支持显式配置尺寸和生成时长：
+`kling-o3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样不需要传 `size` 和 `duration`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -427,8 +426,6 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -d '{
     "prompt": "把视频中的香水替换图片的小熊",
     "model": "kling-o3",
-    "duration": 3,
-    "size": "1080x1920",
     "image_guidance": [
       {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
     ],
@@ -450,7 +447,6 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -d '{
     "prompt": "用多张图片替换视频主体",
     "model": "kling-o3",
-    "duration": 5,
     "image_guidance": [
       {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"},
       {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},
