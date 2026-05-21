@@ -271,6 +271,108 @@ Failed poll response example:
 - `duration`: 视频时长（秒）
 - `size`: 输出尺寸，例如 `1280x720`、`720x1280`
 
+### ko3 下游调用标准
+
+下游调用 `ko3` 时统一使用 `POST /v1/video/generations`，`model` 固定传 `ko3`。`kling-o3` 和 `kling-video-o-3` 仅作为兼容别名保留，不建议新接入继续使用。
+
+通用规则：
+
+- 文生视频、图片生视频、首尾帧、多图生视频：可以传 `duration` 和 `size`
+- `duration` 支持 `3-15` 秒
+- `size` 支持 `1440x1440`、`1080x1920`、`1920x1080`
+- 带视频参考的模式：下游默认不传 `size` 和 `duration`
+- 带视频参考时，服务会按上游 Web 抓包默认发送 `width=0`、`height=0`、`duration=5`
+- 所有请求都需要传 `prompt`
+- 远程图片优先使用 `image_url` / `image_urls` / `start_image_url` / `end_image_url`
+- 远程视频优先使用 `video_url`
+
+推荐字段：
+
+| 模式 | 必填字段 | 可选字段 | 说明 |
+| --- | --- | --- | --- |
+| 文生视频 | `prompt`, `model` | `duration`, `size` | 不传时默认 `duration=3`、`size=1080x1920` |
+| 单图生视频 | `prompt`, `model`, `image_url` | `duration`, `size` | 服务会上传图片并转成 `guidances.image_reference` |
+| 多图生视频 | `prompt`, `model`, `image_urls` | `duration`, `size` | `image_urls` 按数组顺序作为多图参考 |
+| 首尾帧 | `prompt`, `model`, `start_image_url`, `end_image_url` | `duration`, `size` | 服务会分别转成 `start_frame` 和 `end_frame` |
+| 视频生视频 | `prompt`, `model`, `video_url` | 不建议传 `duration`, `size` | 默认使用上游视频参考参数 |
+| 图片 + 视频生视频 | `prompt`, `model`, `image_url`, `video_url` | 不建议传 `duration`, `size` | 图片作为参考图，视频作为参考视频 |
+| 多图 + 视频生视频 | `prompt`, `model`, `image_urls`, `video_url` | 不建议传 `duration`, `size` | 多张图片作为参考图，视频作为参考视频 |
+
+标准 JSON 示例：
+
+```json
+{
+  "prompt": "龟兔赛跑",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920"
+}
+```
+
+```json
+{
+  "prompt": "猫咪跳舞",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "image_url": "https://example.com/cat.png"
+}
+```
+
+```json
+{
+  "prompt": "动物世界",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "image_urls": [
+    "https://example.com/a.png",
+    "https://example.com/b.png",
+    "https://example.com/c.png"
+  ]
+}
+```
+
+```json
+{
+  "prompt": "从图一过渡到图二",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "start_image_url": "https://example.com/start.png",
+  "end_image_url": "https://example.com/end.png"
+}
+```
+
+```json
+{
+  "prompt": "把视频中的香水替换成牙膏",
+  "model": "ko3",
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
+```json
+{
+  "prompt": "把视频中的香水替换成图片里的小熊",
+  "model": "ko3",
+  "image_url": "https://example.com/bear.png",
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
+```json
+{
+  "prompt": "用多张图片替换视频主体",
+  "model": "ko3",
+  "image_urls": [
+    "https://example.com/a.png",
+    "https://example.com/b.png"
+  ],
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
 ### 2.1 文生视频
 
 ```bash
