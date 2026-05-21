@@ -21,6 +21,7 @@
 - `video-2.0`
 - `video-2.0-fast`
 - `sora-2`
+- `ko3`
 
 兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
 
@@ -31,14 +32,18 @@
 | `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
 | `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
 | `sora-2` | `sora-2` | Sora 2 视频上游模型 |
+| `ko3` | `kling-video-o-3` | Kling O3 视频上游模型 |
+| `kling-o3` | `kling-video-o-3` | 兼容旧调用格式 |
 | `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
 | `seedance-2.0-fast` | `seedance-2.0-fast` | 兼容旧调用格式 |
+| `kling-video-o-3` | `kling-video-o-3` | 兼容上游模型名 |
 
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
 `sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
+`ko3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
 
-这两个模型当前统一按下面的口径调用：
+`video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：
 
 - 支持尺寸（比例）：`9:16`、`16:9`、`1:1`
 - 默认分辨率：`720p`
@@ -266,6 +271,122 @@ Failed poll response example:
 - `duration`: 视频时长（秒）
 - `size`: 输出尺寸，例如 `1280x720`、`720x1280`
 
+### ko3 下游调用标准
+
+下游调用 `ko3` 时统一使用 `POST /v1/video/generations`，`model` 固定传 `ko3`。`kling-o3` 和 `kling-video-o-3` 仅作为兼容别名保留，不建议新接入继续使用。
+
+通用规则：
+
+- 文生视频、图片生视频、首尾帧、多图生视频：可以传 `duration` 和 `size`
+- `duration` 支持 `3-15` 秒
+- `size` 支持 `1440x1440`、`1080x1920`、`1920x1080`
+- 文生视频、单图生视频、多图生视频、首尾帧模式要求 token 剩余积分不少于 `4200`
+- 带视频参考的模式：下游默认不传 `size` 和 `duration`
+- 带视频参考时，服务会按上游 Web 抓包默认发送 `width=0`、`height=0`、`duration=5`
+- 带视频参考的模式要求 token 剩余积分不少于 `3400`
+- 所有请求都需要传 `prompt`
+- 远程图片优先使用 `image_url` / `image_urls` / `start_image_url` / `end_image_url`
+- 远程视频优先使用 `video_url`
+
+推荐字段：
+
+| 模式 | 必填字段 | 可选字段 | 说明 |
+| --- | --- | --- | --- |
+| 文生视频 | `prompt`, `model` | `duration`, `size` | 不传时默认 `duration=3`、`size=1080x1920` |
+| 单图生视频 | `prompt`, `model`, `image_url` | `duration`, `size` | 服务会上传图片并转成 `guidances.image_reference` |
+| 多图生视频 | `prompt`, `model`, `image_urls` | `duration`, `size` | `image_urls` 按数组顺序作为多图参考 |
+| 首尾帧 | `prompt`, `model`, `start_image_url`, `end_image_url` | `duration`, `size` | 服务会分别转成 `start_frame` 和 `end_frame` |
+| 视频生视频 | `prompt`, `model`, `video_url` | 不建议传 `duration`, `size` | 默认使用上游视频参考参数 |
+| 图片 + 视频生视频 | `prompt`, `model`, `image_url`, `video_url` | 不建议传 `duration`, `size` | 图片作为参考图，视频作为参考视频 |
+| 多图 + 视频生视频 | `prompt`, `model`, `image_urls`, `video_url` | 不建议传 `duration`, `size` | 多张图片作为参考图，视频作为参考视频 |
+
+积分门槛：
+
+| 模式 | 最低剩余积分 |
+| --- | --- |
+| 文生视频 | `4200` |
+| 单图生视频 | `4200` |
+| 多图生视频 | `4200` |
+| 首尾帧 | `4200` |
+| 视频生视频 | `3400` |
+| 图片 + 视频生视频 | `3400` |
+| 多图 + 视频生视频 | `3400` |
+
+标准 JSON 示例：
+
+```json
+{
+  "prompt": "龟兔赛跑",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920"
+}
+```
+
+```json
+{
+  "prompt": "猫咪跳舞",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "image_url": "https://example.com/cat.png"
+}
+```
+
+```json
+{
+  "prompt": "动物世界",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "image_urls": [
+    "https://example.com/a.png",
+    "https://example.com/b.png",
+    "https://example.com/c.png"
+  ]
+}
+```
+
+```json
+{
+  "prompt": "从图一过渡到图二",
+  "model": "ko3",
+  "duration": 3,
+  "size": "1080x1920",
+  "start_image_url": "https://example.com/start.png",
+  "end_image_url": "https://example.com/end.png"
+}
+```
+
+```json
+{
+  "prompt": "把视频中的香水替换成牙膏",
+  "model": "ko3",
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
+```json
+{
+  "prompt": "把视频中的香水替换成图片里的小熊",
+  "model": "ko3",
+  "image_url": "https://example.com/bear.png",
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
+```json
+{
+  "prompt": "用多张图片替换视频主体",
+  "model": "ko3",
+  "image_urls": [
+    "https://example.com/a.png",
+    "https://example.com/b.png"
+  ],
+  "video_url": "https://example.com/source.mp4"
+}
+```
+
 ### 2.1 文生视频
 
 ```bash
@@ -291,6 +412,20 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     "model": "sora-2",
     "duration": 8,
     "size": "720x1280"
+  }'
+```
+
+`ko3` 文生视频示例：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "龟兔赛跑",
+    "model": "ko3",
+    "duration": 3,
+    "size": "1080x1920"
   }'
 ```
 
@@ -326,7 +461,124 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-也可以显式使用 `start_frame`：
+`ko3` 图生视频同样可以使用 `image_url`，服务会把它转换为 Leonardo 上游的 `guidances.image_reference`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "猫咪跳舞",
+    "model": "ko3",
+    "duration": 3,
+    "size": "1080x1920",
+    "image_url": "https://example.com/cat.png"
+  }'
+```
+
+`ko3` 多图生视频可使用 `image_guidance`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "动物世界",
+    "model": "ko3",
+    "duration": 3,
+    "size": "1080x1920",
+    "image_guidance": [
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"},
+      {"id": "b3941f10-34ab-4535-8725-ff44a3f2ca21"},
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
+    ]
+  }'
+```
+
+`ko3` 首尾帧模式可使用 `start_frame` 和 `end_frame`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "从图一过渡到图二",
+    "model": "ko3",
+    "duration": 3,
+    "size": "1080x1920",
+    "start_frame": [
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"}
+    ],
+    "end_frame": [
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"}
+    ]
+  }'
+```
+
+`ko3` 参考视频生视频可使用 `video_reference`。带视频参考时不需要传 `size` 和 `duration`；服务会默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`、`duration=5`。如需覆盖，也可以显式传 `size` 或 `width` / `height`，并用 `duration` 控制生成时长：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "把视频中的香水替换成牙膏",
+    "model": "ko3",
+    "video_reference": [
+      {
+        "id": "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9",
+        "duration": 7.918005
+      }
+    ]
+  }'
+```
+
+`ko3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样不需要传 `size` 和 `duration`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "把视频中的香水替换图片的小熊",
+    "model": "ko3",
+    "image_guidance": [
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
+    ],
+    "video_reference": [
+      {
+        "id": "f232eea2-b9e8-4a17-8270-fa5a36dbe8dc",
+        "duration": 4.017007
+      }
+    ]
+  }'
+```
+
+`ko3` 多图 + 视频参考也使用同一组字段，只需要在 `image_guidance` 中传多张图：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "用多张图片替换视频主体",
+    "model": "ko3",
+    "image_guidance": [
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"},
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"}
+    ],
+    "video_reference": [
+      {
+        "id": "f232eea2-b9e8-4a17-8270-fa5a36dbe8dc",
+        "duration": 4.017007
+      }
+    ]
+  }'
+```
+
+`sora-2` 也可以显式使用 `start_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
