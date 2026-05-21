@@ -56,19 +56,20 @@ var openAIModelCatalog = []map[string]interface{}{
 		"description": "Kling O3 video generation",
 		"aliases":     []string{"kling-video-o-3"},
 		"parameters": map[string]interface{}{
-			"duration": []int{3},
-			"size":     []string{"1080x1920", "1920x1080"},
+			"duration": []int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+			"size":     []string{"1440x1440", "1080x1920", "1920x1080", "0x0"},
 		},
 	},
 }
 
 const (
-	defaultSeedanceVideoDuration = 10
-	defaultSora2VideoDuration    = 8
-	defaultKlingO3VideoDuration  = 3
-	tokenPreparationLeaseTTL     = 5 * time.Minute
-	video2RequiredCredits        = 4550
-	video2FastRequiredCredits    = 3650
+	defaultSeedanceVideoDuration   = 10
+	defaultSora2VideoDuration      = 8
+	defaultKlingO3VideoDuration    = 3
+	defaultKlingO3VideoRefDuration = 5
+	tokenPreparationLeaseTTL       = 5 * time.Minute
+	video2RequiredCredits          = 4550
+	video2FastRequiredCredits      = 3650
 )
 
 // Server holds all dependencies for HTTP handlers.
@@ -216,6 +217,10 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	responseModelID := publicVideoModelID(modelID)
 	duration := defaultVideoDuration(modelID)
+	klingO3VideoRefMode := isKlingO3ModelID(modelID) && hasVideoReferenceInput(data)
+	if klingO3VideoRefMode {
+		duration = defaultKlingO3VideoRefDuration
+	}
 	if d, ok := data["duration"].(float64); ok {
 		duration = int(d)
 	}
@@ -223,8 +228,8 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
 		return
 	}
-	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Duration(duration) {
-		writeJSON(w, 400, errorResp("kling-o3 duration must be 3 seconds", "invalid_request_error"))
+	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Duration(duration, klingO3VideoRefMode) {
+		writeJSON(w, 400, errorResp(klingO3DurationError(klingO3VideoRefMode), "invalid_request_error"))
 		return
 	}
 	if duration < 4 || duration > 15 {
@@ -236,6 +241,9 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 
 	// Parse size (e.g. "1280x720")
 	width, height := defaultVideoSize(modelID)
+	if klingO3VideoRefMode {
+		width, height = 0, 0
+	}
 	if size, ok := data["size"].(string); ok && size != "" {
 		parts := strings.Split(size, "x")
 		if len(parts) == 2 {
@@ -247,12 +255,18 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if w, ok := data["width"].(float64); ok {
+		width = int(w)
+	}
+	if h, ok := data["height"].(float64); ok {
+		height = int(h)
+	}
 	if isKlingO3ModelID(modelID) && hasUnsupportedKlingO3GuidanceInput(data) {
 		writeJSON(w, 400, errorResp("kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only", "invalid_request_error"))
 		return
 	}
-	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Size(width, height) {
-		writeJSON(w, 400, errorResp("kling-o3 size must be 1080x1920 or 1920x1080", "invalid_request_error"))
+	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Size(width, height, klingO3VideoRefMode) {
+		writeJSON(w, 400, errorResp(klingO3SizeError(klingO3VideoRefMode), "invalid_request_error"))
 		return
 	}
 	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
@@ -793,29 +807,52 @@ func isAllowedSora2Size(width int, height int) bool {
 	return (width == 720 && height == 1280) || (width == 1280 && height == 720)
 }
 
-func isAllowedKlingO3Duration(duration int) bool {
-	return duration == defaultKlingO3VideoDuration
+func isAllowedKlingO3Duration(duration int, videoReferenceMode bool) bool {
+	return duration >= 3 && duration <= 15
 }
 
-func isAllowedKlingO3Size(width int, height int) bool {
-	return (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
+func klingO3DurationError(videoReferenceMode bool) string {
+	return "kling-o3 duration must be between 3 and 15 seconds"
 }
 
-func hasUnsupportedKlingO3GuidanceInput(data map[string]interface{}) bool {
+func isAllowedKlingO3Size(width int, height int, videoReferenceMode bool) bool {
+	if videoReferenceMode && width == 0 && height == 0 {
+		return true
+	}
+	return (width == 1440 && height == 1440) || (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
+}
+
+func klingO3SizeError(videoReferenceMode bool) string {
+	if videoReferenceMode {
+		return "kling-o3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080"
+	}
+	return "kling-o3 size must be 1440x1440, 1080x1920, or 1920x1080"
+}
+
+func hasVideoReferenceInput(data map[string]interface{}) bool {
 	if data == nil {
 		return false
 	}
 	if strings.TrimSpace(toString(data["video_url"])) != "" {
 		return true
 	}
-	if rawItems, ok := data["video_reference"].([]interface{}); ok && len(rawItems) > 0 {
-		return true
+	if rawVideos, ok := data["video_reference"].([]interface{}); ok {
+		for _, item := range rawVideos {
+			entry, _ := item.(map[string]interface{})
+			if strings.TrimSpace(toString(entry["id"])) != "" || strings.TrimSpace(toString(entry["url"])) != "" {
+				return true
+			}
+		}
 	}
 	return false
 }
 
+func hasUnsupportedKlingO3GuidanceInput(data map[string]interface{}) bool {
+	return false
+}
+
 func leonardoVideoResolutionMode(modelID string, width int, height int) string {
-	if isKlingO3ModelID(modelID) && isAllowedKlingO3Size(width, height) {
+	if isKlingO3ModelID(modelID) {
 		return "RESOLUTION_1080"
 	}
 	return "RESOLUTION_720"

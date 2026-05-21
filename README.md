@@ -40,7 +40,7 @@
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
 `sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
-`kling-o3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频和首尾帧模式。
+`kling-o3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
 
 `video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：
 
@@ -395,6 +395,72 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     ],
     "end_frame": [
       {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"}
+    ]
+  }'
+```
+
+`kling-o3` 参考视频生视频可使用 `video_reference`。这种模式默认按 Leonardo Web 端抓包发送 `width=0`、`height=0`，也可以显式传 `size` 或 `width` / `height` 覆盖尺寸，并用 `duration` 控制生成时长：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "把视频中的香水替换成牙膏",
+    "model": "kling-o3",
+    "duration": 5,
+    "video_reference": [
+      {
+        "id": "fbeda0e3-a8b3-45d6-a22e-4e53da4148f9",
+        "duration": 7.918005
+      }
+    ]
+  }'
+```
+
+`kling-o3` 图片 + 视频参考可同时传 `image_guidance` 和 `video_reference`，同样支持显式配置尺寸和生成时长：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "把视频中的香水替换图片的小熊",
+    "model": "kling-o3",
+    "duration": 3,
+    "size": "1080x1920",
+    "image_guidance": [
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"}
+    ],
+    "video_reference": [
+      {
+        "id": "f232eea2-b9e8-4a17-8270-fa5a36dbe8dc",
+        "duration": 4.017007
+      }
+    ]
+  }'
+```
+
+`kling-o3` 多图 + 视频参考也使用同一组字段，只需要在 `image_guidance` 中传多张图：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "用多张图片替换视频主体",
+    "model": "kling-o3",
+    "duration": 5,
+    "image_guidance": [
+      {"id": "b9b7f87c-3312-44c6-a92d-a81745ec0635"},
+      {"id": "09eff9d4-284a-4454-aa42-2a5c64906af6"},
+      {"id": "f02f2740-708a-4333-9253-f2bf788fe201"}
+    ],
+    "video_reference": [
+      {
+        "id": "f232eea2-b9e8-4a17-8270-fa5a36dbe8dc",
+        "duration": 4.017007
+      }
     ]
   }'
 ```

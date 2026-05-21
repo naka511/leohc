@@ -780,11 +780,19 @@ func isAllowedSora2Size(width int, height int) bool {
 }
 
 func isAllowedKlingO3Duration(duration int) bool {
-	return duration == 3
+	return duration >= 3 && duration <= 15
 }
 
 func isAllowedKlingO3Size(width int, height int) bool {
-	return (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
+	return (width == 1440 && height == 1440) || (width == 1080 && height == 1920) || (width == 1920 && height == 1080)
+}
+
+func isAllowedKlingO3VideoRefDuration(duration int) bool {
+	return duration >= 3 && duration <= 15
+}
+
+func isAllowedKlingO3VideoRefSize(width int, height int) bool {
+	return (width == 0 && height == 0) || isAllowedKlingO3Size(width, height)
 }
 
 // doGraphQL sends a GraphQL request and returns the raw response body.
@@ -850,8 +858,11 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if strings.EqualFold(genReq.Model, "kling-o3") {
 		genReq.Model = "kling-video-o-3"
 	}
+	isKlingO3VideoRefMode := isKlingO3Model(genReq.Model) && len(genReq.Params.VideoRefs) > 0
 	if genReq.Params.Width == 0 {
-		if isKlingO3Model(genReq.Model) {
+		if isKlingO3VideoRefMode {
+			genReq.Params.Width = 0
+		} else if isKlingO3Model(genReq.Model) {
 			genReq.Params.Width = 1080
 		} else if isSora2Model(genReq.Model) {
 			genReq.Params.Width = 720
@@ -860,7 +871,9 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 		}
 	}
 	if genReq.Params.Height == 0 {
-		if isKlingO3Model(genReq.Model) {
+		if isKlingO3VideoRefMode {
+			genReq.Params.Height = 0
+		} else if isKlingO3Model(genReq.Model) {
 			genReq.Params.Height = 1920
 		} else if isSora2Model(genReq.Model) {
 			genReq.Params.Height = 1280
@@ -879,7 +892,11 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 		genReq.Params.Duration = 8
 	}
 	if genReq.Params.Duration == 0 && isKlingO3Model(genReq.Model) {
-		genReq.Params.Duration = 3
+		if isKlingO3VideoRefMode {
+			genReq.Params.Duration = 5
+		} else {
+			genReq.Params.Duration = 3
+		}
 	}
 	if genReq.Params.Duration == 0 {
 		genReq.Params.Duration = 4
@@ -899,14 +916,20 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 		}
 	}
 	if isKlingO3Model(genReq.Model) {
-		if !isAllowedKlingO3Duration(genReq.Params.Duration) {
-			return nil, fmt.Errorf("kling-o3 duration must be 3 seconds")
-		}
-		if !isAllowedKlingO3Size(genReq.Params.Width, genReq.Params.Height) {
-			return nil, fmt.Errorf("kling-o3 size must be 1080x1920 or 1920x1080")
-		}
-		if len(genReq.Params.VideoRefs) > 0 {
-			return nil, fmt.Errorf("kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only")
+		if isKlingO3VideoRefMode {
+			if !isAllowedKlingO3VideoRefDuration(genReq.Params.Duration) {
+				return nil, fmt.Errorf("kling-o3 video reference duration must be between 3 and 15 seconds")
+			}
+			if !isAllowedKlingO3VideoRefSize(genReq.Params.Width, genReq.Params.Height) {
+				return nil, fmt.Errorf("kling-o3 video reference size must be 0x0, 1440x1440, 1080x1920, or 1920x1080")
+			}
+		} else {
+			if !isAllowedKlingO3Duration(genReq.Params.Duration) {
+				return nil, fmt.Errorf("kling-o3 duration must be between 3 and 15 seconds")
+			}
+			if !isAllowedKlingO3Size(genReq.Params.Width, genReq.Params.Height) {
+				return nil, fmt.Errorf("kling-o3 size must be 1440x1440, 1080x1920, or 1920x1080")
+			}
 		}
 	}
 

@@ -2180,26 +2180,30 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if isKlingO3ModelID(modelID) {
-		if len(body.VideoReference) > 0 {
-			writeJSON(w, 400, map[string]string{"detail": "kling-o3 currently supports text-to-video, image-reference image-to-video, and start/end-frame requests only"})
-			return
-		}
+		klingO3VideoRefMode := len(body.VideoReference) > 0
 		if body.Duration == 0 {
-			body.Duration = defaultKlingO3VideoDuration
+			if klingO3VideoRefMode {
+				body.Duration = defaultKlingO3VideoRefDuration
+			} else {
+				body.Duration = defaultKlingO3VideoDuration
+			}
 		}
-		if !isAllowedKlingO3Duration(body.Duration) {
-			writeJSON(w, 400, map[string]string{"detail": "kling-o3 duration must be 3 seconds"})
+		if !isAllowedKlingO3Duration(body.Duration, klingO3VideoRefMode) {
+			writeJSON(w, 400, map[string]string{"detail": klingO3DurationError(klingO3VideoRefMode)})
 			return
 		}
 		defaultWidth, defaultHeight := defaultVideoSize(modelID)
+		if klingO3VideoRefMode {
+			defaultWidth, defaultHeight = 0, 0
+		}
 		if body.Width == 0 {
 			body.Width = defaultWidth
 		}
 		if body.Height == 0 {
 			body.Height = defaultHeight
 		}
-		if !isAllowedKlingO3Size(body.Width, body.Height) {
-			writeJSON(w, 400, map[string]string{"detail": "kling-o3 size must be 1080x1920 or 1920x1080"})
+		if !isAllowedKlingO3Size(body.Width, body.Height, klingO3VideoRefMode) {
+			writeJSON(w, 400, map[string]string{"detail": klingO3SizeError(klingO3VideoRefMode)})
 			return
 		}
 		if strings.TrimSpace(body.Mode) == "" {

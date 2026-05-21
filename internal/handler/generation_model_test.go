@@ -77,20 +77,41 @@ func TestSora2AllowedDurationsAndSizes(t *testing.T) {
 }
 
 func TestKlingO3AllowedDurationsSizesAndGuidance(t *testing.T) {
-	if !isAllowedKlingO3Duration(3) {
+	if !isAllowedKlingO3Duration(3, false) {
 		t.Fatal("duration 3 should be allowed for kling-o3")
 	}
-	if isAllowedKlingO3Duration(4) {
-		t.Fatal("duration 4 should not be allowed for kling-o3")
+	if !isAllowedKlingO3Duration(4, false) {
+		t.Fatal("duration 4 should be allowed for kling-o3")
 	}
-	if !isAllowedKlingO3Size(1080, 1920) {
+	if !isAllowedKlingO3Duration(15, false) {
+		t.Fatal("duration 15 should be allowed for kling-o3")
+	}
+	if isAllowedKlingO3Duration(16, false) {
+		t.Fatal("duration 16 should not be allowed for kling-o3")
+	}
+	if !isAllowedKlingO3Size(1080, 1920, false) {
 		t.Fatal("1080x1920 should be allowed for kling-o3")
 	}
-	if !isAllowedKlingO3Size(1920, 1080) {
+	if !isAllowedKlingO3Size(1920, 1080, false) {
 		t.Fatal("1920x1080 should be allowed for kling-o3")
 	}
-	if isAllowedKlingO3Size(1280, 720) {
+	if !isAllowedKlingO3Size(1440, 1440, false) {
+		t.Fatal("1440x1440 should be allowed for kling-o3")
+	}
+	if isAllowedKlingO3Size(1280, 720, false) {
 		t.Fatal("1280x720 should not be allowed for kling-o3")
+	}
+	if !isAllowedKlingO3Duration(5, true) {
+		t.Fatal("duration 5 should be allowed for kling-o3 video reference")
+	}
+	if !isAllowedKlingO3Duration(3, true) {
+		t.Fatal("duration 3 should be allowed for kling-o3 video reference")
+	}
+	if isAllowedKlingO3Duration(2, true) {
+		t.Fatal("duration 2 should not be allowed for kling-o3 video reference")
+	}
+	if !isAllowedKlingO3Size(0, 0, true) {
+		t.Fatal("0x0 should be allowed for kling-o3 video reference")
 	}
 	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"prompt": "text only"}) {
 		t.Fatal("text-only request should not have unsupported kling-o3 guidance input")
@@ -117,8 +138,8 @@ func TestKlingO3AllowedDurationsSizesAndGuidance(t *testing.T) {
 	}) {
 		t.Fatal("multiple image_guidance entries should be allowed as Kling O3 image-reference guidance")
 	}
-	if !hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"video_reference": []interface{}{map[string]interface{}{"id": "vid"}}}) {
-		t.Fatal("video_reference should be detected as unsupported Kling O3 guidance input")
+	if hasUnsupportedKlingO3GuidanceInput(map[string]interface{}{"video_reference": []interface{}{map[string]interface{}{"id": "vid"}}}) {
+		t.Fatal("video_reference should be allowed as Kling O3 video-reference guidance")
 	}
 }
 
