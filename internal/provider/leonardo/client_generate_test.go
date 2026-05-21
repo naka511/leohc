@@ -233,25 +233,24 @@ func TestGetGenerationFailureReasonExtractsModerationDetails(t *testing.T) {
 				t.Fatalf("read request body: %v", err)
 			}
 			requestBody = string(body)
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body: io.NopCloser(strings.NewReader(`{
-					"data": {
-						"generations": [{
-							"id": "gen-failed",
-							"status": "FAILED",
-							"prompt_moderations": [{
-								"moderationClassification": ["NSFW", "EXTREME_VIOLENCE"]
-							}],
-							"notes": [{
-								"noteType": "PROVIDER_FAILURE",
-								"failureReason": {"errorCode": "PROVIDER_MODERATION_ERROR"}
-							}]
-						}]
-					}
-				}`)),
-			}, nil
+			payload := mustJSONMap(t, requestBody)
+			switch payload["operationName"] {
+			case "GetGenerationPromptModerations":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"gen-failed","status":"FAILED","prompt_moderations":[{"moderationClassification":["NSFW","EXTREME_VIOLENCE"]}]}]}}`)),
+				}, nil
+			case "GetGenerationFailureNotes":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"gen-failed","status":"FAILED","notes":[{"noteType":"PROVIDER_FAILURE","failureReason":{"errorCode":"PROVIDER_MODERATION_ERROR"}}]}]}}`)),
+				}, nil
+			default:
+				t.Fatalf("unexpected operationName: %v", payload["operationName"])
+				return nil, nil
+			}
 		}),
 	}
 	session := &TokenSession{
@@ -268,8 +267,8 @@ func TestGetGenerationFailureReasonExtractsModerationDetails(t *testing.T) {
 	}
 
 	payload := mustJSONMap(t, requestBody)
-	if payload["operationName"] != "GetGenerationModerationFailureReason" {
-		t.Fatalf("operationName = %v, want GetGenerationModerationFailureReason", payload["operationName"])
+	if payload["operationName"] != "GetGenerationFailureNotes" {
+		t.Fatalf("last operationName = %v, want GetGenerationFailureNotes", payload["operationName"])
 	}
 }
 
@@ -283,11 +282,17 @@ func TestGetGenerationFailureReasonIgnoresDifferentGenerationID(t *testing.T) {
 			}
 			payload := mustJSONMap(t, string(body))
 			switch payload["operationName"] {
-			case "GetGenerationModerationFailureReason":
+			case "GetGenerationPromptModerations":
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header:     make(http.Header),
-					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"other-gen","status":"FAILED","prompt_moderations":[{"moderationClassification":["NSFW"]}],"notes":[{"noteType":"PROVIDER_FAILURE","failureReason":{"errorCode":"PROVIDER_MODERATION_ERROR"}}]}]}}`)),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"other-gen","status":"FAILED","prompt_moderations":[{"moderationClassification":["NSFW"]}]}]}}`)),
+				}, nil
+			case "GetGenerationFailureNotes":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"other-gen","status":"FAILED","notes":[{"noteType":"PROVIDER_FAILURE","failureReason":{"errorCode":"PROVIDER_MODERATION_ERROR"}}]}]}}`)),
 				}, nil
 			case "IntrospectGenerationType":
 				return &http.Response{
