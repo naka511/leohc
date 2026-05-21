@@ -222,13 +222,22 @@ func TestRequiredCreditsForVideoModel(t *testing.T) {
 		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "sora-2", want: 0, ok: false},
-		{modelID: "ko3", want: 0, ok: false},
-		{modelID: "kling-o3", want: 0, ok: false},
+		{modelID: "ko3", want: klingO3RequiredCredits, ok: true},
+		{modelID: "kling-o3", want: klingO3RequiredCredits, ok: true},
 	}
 	for _, tt := range tests {
 		got, ok := requiredCreditsForVideoModel(tt.modelID)
 		if ok != tt.ok || got != tt.want {
 			t.Fatalf("requiredCreditsForVideoModel(%q) = %.0f, %v; want %.0f, %v", tt.modelID, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestRequiredCreditsForKlingO3VideoReference(t *testing.T) {
+	for _, modelID := range []string{"ko3", "kling-o3", "kling-video-o-3"} {
+		got, ok := requiredCreditsForVideoRequest(modelID, true)
+		if !ok || got != klingO3VideoRefRequiredCredits {
+			t.Fatalf("requiredCreditsForVideoRequest(%q, true) = %.0f, %v; want %.0f, true", modelID, got, ok, float64(klingO3VideoRefRequiredCredits))
 		}
 	}
 }

@@ -2212,7 +2212,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get session from token pool
-	session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease(body.TokenID, nil, modelID)
+	session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease(body.TokenID, nil, modelID, isKlingO3ModelID(modelID) && len(body.VideoReference) > 0)
 	if session == nil {
 		writeJSON(w, 404, map[string]string{"detail": "No tokens available"})
 		return
@@ -3410,7 +3410,7 @@ func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string
 	return s.getLeonardoSessionForModelExcluding(tokenID, excluded, "")
 }
 
-func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID string, excluded map[string]bool, modelID string) (*leonardo.TokenSession, string, func()) {
+func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID string, excluded map[string]bool, modelID string, videoReferenceMode bool) (*leonardo.TokenSession, string, func()) {
 	release := func() {}
 	if tokenID != "" {
 		if excluded != nil && excluded[tokenID] {
@@ -3419,7 +3419,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		if s.tokenHasPreparationLease(tokenID) || !s.reserveTokenPreparation(tokenID) {
 			return nil, "", release
 		}
-		session, usedTokenID := s.getLeonardoSessionForModel(tokenID, modelID)
+		session, usedTokenID := s.getLeonardoSessionForModel(tokenID, modelID, videoReferenceMode)
 		if session == nil || usedTokenID == "" {
 			s.releaseTokenPreparation(tokenID)
 			return nil, "", release
@@ -3455,7 +3455,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		if s.tokenHasPreparationLease(foundID) || !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.tokenCanRunModelByCredits(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
 			continue
 		}
 		if !s.reserveTokenPreparation(foundID) {
@@ -3491,7 +3491,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if !s.tokenCanAcceptMoreRunningTasks(tokenID) {
 			return nil, ""
 		}
-		return s.getLeonardoSessionForModel(tokenID, modelID)
+		return s.getLeonardoSessionForModel(tokenID, modelID, false)
 	}
 
 	strategy := "round_robin"
@@ -3522,7 +3522,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.tokenCanRunModelByCredits(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID, false) {
 			continue
 		}
 
@@ -3546,10 +3546,10 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 // getLeonardoSession finds a Leonardo session from the token pool.
 // Returns the session and the token ID used.
 func (s *Server) getLeonardoSession(tokenID string) (*leonardo.TokenSession, string) {
-	return s.getLeonardoSessionForModel(tokenID, "")
+	return s.getLeonardoSessionForModel(tokenID, "", false)
 }
 
-func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*leonardo.TokenSession, string) {
+func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, videoReferenceMode bool) (*leonardo.TokenSession, string) {
 	// If specific tokenID provided, use that
 	if tokenID != "" {
 		info := s.TokenMgr.GetByID(tokenID)
@@ -3562,7 +3562,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 		if isExpiredTokenInfo(info) {
 			return nil, ""
 		}
-		if !s.tokenCanRunModelByCredits(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
 			return nil, ""
 		}
 		rawToken, _ := info["value"].(string)
@@ -3608,7 +3608,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
-		if !s.tokenCanRunModelByCredits(info, modelID) {
+		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
 			continue
 		}
 
@@ -3630,6 +3630,10 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string) (*le
 }
 
 func requiredCreditsForVideoModel(modelID string) (float64, bool) {
+	return requiredCreditsForVideoRequest(modelID, false)
+}
+
+func requiredCreditsForVideoRequest(modelID string, videoReferenceMode bool) (float64, bool) {
 	canonicalModelID, ok := normalizeVideoModelID(modelID)
 	if !ok {
 		canonicalModelID = strings.TrimSpace(modelID)
@@ -3639,6 +3643,11 @@ func requiredCreditsForVideoModel(modelID string) (float64, bool) {
 		return video2RequiredCredits, true
 	case "seedance-2.0-fast":
 		return video2FastRequiredCredits, true
+	case "kling-video-o-3":
+		if videoReferenceMode {
+			return klingO3VideoRefRequiredCredits, true
+		}
+		return klingO3RequiredCredits, true
 	default:
 		return 0, false
 	}
@@ -3662,14 +3671,14 @@ func tokenCreditsAvailable(info map[string]interface{}) (float64, bool) {
 }
 
 func (s *Server) markTokenExhaustedIfBelowGenerationMinimum(tokenID string, credits float64, reason string) {
-	if strings.TrimSpace(tokenID) == "" || credits >= video2FastRequiredCredits {
+	if strings.TrimSpace(tokenID) == "" || credits >= minVideoRequiredCredits {
 		return
 	}
-	s.markTokenExhausted(tokenID, fmt.Sprintf("%s: %.0f < %.0f", strings.TrimSpace(reason), credits, float64(video2FastRequiredCredits)))
+	s.markTokenExhausted(tokenID, fmt.Sprintf("%s: %.0f < %.0f", strings.TrimSpace(reason), credits, float64(minVideoRequiredCredits)))
 }
 
-func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID string) bool {
-	requiredCredits, ok := requiredCreditsForVideoModel(modelID)
+func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID string, videoReferenceMode bool) bool {
+	requiredCredits, ok := requiredCreditsForVideoRequest(modelID, videoReferenceMode)
 	if !ok {
 		return true
 	}
@@ -3679,7 +3688,7 @@ func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID 
 		return false
 	}
 	tokenID := strings.TrimSpace(toString(info["id"]))
-	if availableCredits < video2FastRequiredCredits {
+	if availableCredits < minVideoRequiredCredits {
 		s.markTokenExhaustedIfBelowGenerationMinimum(tokenID, availableCredits, "remaining credits below video generation minimum")
 		return false
 	}

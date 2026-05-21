@@ -70,6 +70,9 @@ const (
 	tokenPreparationLeaseTTL       = 5 * time.Minute
 	video2RequiredCredits          = 4550
 	video2FastRequiredCredits      = 3650
+	klingO3RequiredCredits         = 4200
+	klingO3VideoRefRequiredCredits = 3400
+	minVideoRequiredCredits        = klingO3VideoRefRequiredCredits
 )
 
 // Server holds all dependencies for HTTP handlers.
@@ -290,7 +293,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastAttempt int
 
 	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
-		session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease("", triedTokenIDs, modelID)
+		session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease("", triedTokenIDs, modelID, klingO3VideoRefMode)
 		if session == nil {
 			if lastFailure != nil {
 				break

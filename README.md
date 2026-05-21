@@ -280,8 +280,10 @@ Failed poll response example:
 - 文生视频、图片生视频、首尾帧、多图生视频：可以传 `duration` 和 `size`
 - `duration` 支持 `3-15` 秒
 - `size` 支持 `1440x1440`、`1080x1920`、`1920x1080`
+- 文生视频、单图生视频、多图生视频、首尾帧模式要求 token 剩余积分不少于 `4200`
 - 带视频参考的模式：下游默认不传 `size` 和 `duration`
 - 带视频参考时，服务会按上游 Web 抓包默认发送 `width=0`、`height=0`、`duration=5`
+- 带视频参考的模式要求 token 剩余积分不少于 `3400`
 - 所有请求都需要传 `prompt`
 - 远程图片优先使用 `image_url` / `image_urls` / `start_image_url` / `end_image_url`
 - 远程视频优先使用 `video_url`
@@ -297,6 +299,18 @@ Failed poll response example:
 | 视频生视频 | `prompt`, `model`, `video_url` | 不建议传 `duration`, `size` | 默认使用上游视频参考参数 |
 | 图片 + 视频生视频 | `prompt`, `model`, `image_url`, `video_url` | 不建议传 `duration`, `size` | 图片作为参考图，视频作为参考视频 |
 | 多图 + 视频生视频 | `prompt`, `model`, `image_urls`, `video_url` | 不建议传 `duration`, `size` | 多张图片作为参考图，视频作为参考视频 |
+
+积分门槛：
+
+| 模式 | 最低剩余积分 |
+| --- | --- |
+| 文生视频 | `4200` |
+| 单图生视频 | `4200` |
+| 多图生视频 | `4200` |
+| 首尾帧 | `4200` |
+| 视频生视频 | `3400` |
+| 图片 + 视频生视频 | `3400` |
+| 多图 + 视频生视频 | `3400` |
 
 标准 JSON 示例：
 
