@@ -223,6 +223,104 @@ func TestGenerateRejectsUnsupportedSora2Options(t *testing.T) {
 	}
 }
 
+func TestGetGenerationFailureReasonExtractsModerationDetails(t *testing.T) {
+	var requestBody string
+	client := NewClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			requestBody = string(body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"data": {
+						"generations": [{
+							"id": "gen-failed",
+							"status": "FAILED",
+							"prompt_moderations": [{
+								"moderationClassification": ["NSFW", "EXTREME_VIOLENCE"]
+							}],
+							"notes": [{
+								"noteType": "PROVIDER_FAILURE",
+								"failureReason": {"errorCode": "PROVIDER_MODERATION_ERROR"}
+							}]
+						}]
+					}
+				}`)),
+			}, nil
+		}),
+	}
+	session := &TokenSession{
+		JWT:       "jwt",
+		JWTExpiry: time.Now().Add(time.Hour),
+	}
+
+	reason, err := client.GetGenerationFailureReason(session, "gen-failed")
+	if err != nil {
+		t.Fatalf("GetGenerationFailureReason returned error: %v", err)
+	}
+	if reason != "PROVIDER_MODERATION_ERROR: NSFW, EXTREME_VIOLENCE" {
+		t.Fatalf("reason = %q", reason)
+	}
+
+	payload := mustJSONMap(t, requestBody)
+	if payload["operationName"] != "GetGenerationModerationFailureReason" {
+		t.Fatalf("operationName = %v, want GetGenerationModerationFailureReason", payload["operationName"])
+	}
+}
+
+func TestGetGenerationFailureReasonIgnoresDifferentGenerationID(t *testing.T) {
+	client := NewClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			payload := mustJSONMap(t, string(body))
+			switch payload["operationName"] {
+			case "GetGenerationModerationFailureReason":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[{"id":"other-gen","status":"FAILED","prompt_moderations":[{"moderationClassification":["NSFW"]}],"notes":[{"noteType":"PROVIDER_FAILURE","failureReason":{"errorCode":"PROVIDER_MODERATION_ERROR"}}]}]}}`)),
+				}, nil
+			case "IntrospectGenerationType":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"__type":{"fields":[]}}}`)),
+				}, nil
+			case "GetGenerationFailureReason":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"generations":[]}}`)),
+				}, nil
+			default:
+				t.Fatalf("unexpected operationName: %v", payload["operationName"])
+				return nil, nil
+			}
+		}),
+	}
+	session := &TokenSession{
+		JWT:       "jwt",
+		JWTExpiry: time.Now().Add(time.Hour),
+	}
+
+	reason, err := client.GetGenerationFailureReason(session, "gen-failed")
+	if err != nil {
+		t.Fatalf("GetGenerationFailureReason returned error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
 func mustJSONMap(t *testing.T, raw string) map[string]interface{} {
 	t.Helper()
 	var out map[string]interface{}

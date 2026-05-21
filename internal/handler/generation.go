@@ -838,12 +838,7 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 		}
 		elapsed := time.Since(startTime).Seconds()
 		if status.Status == "FAILED" {
-			failureMessage := "generation status FAILED"
-			if reason, reasonErr := s.LeonardoClient.GetGenerationFailureReason(session, generationID); reasonErr != nil {
-				log.Printf("[Leonardo] failed to fetch generation failure reason for %s: %v", generationID, reasonErr)
-			} else if strings.TrimSpace(reason) != "" {
-				failureMessage = strings.TrimSpace(reason)
-			}
+			failureMessage := s.waitForGenerationFailureReason(session, generationID, "Leonardo")
 			if isInsufficientTokensMessage(failureMessage) {
 				s.markTokenExhausted(usedTokenID, failureMessage)
 			}
