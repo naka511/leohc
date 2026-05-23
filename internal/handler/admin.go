@@ -573,15 +573,7 @@ func (s *Server) HandleDeleteBatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"detail": "invalid body"})
 		return
 	}
-	deletedIDs := []string{}
-	missing := 0
-	for _, id := range body.IDs {
-		if s.TokenMgr.Remove(id) == nil {
-			deletedIDs = append(deletedIDs, id)
-		} else {
-			missing++
-		}
-	}
+	deletedIDs, missing := s.TokenMgr.RemoveMany(body.IDs)
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":            true,
 		"deleted":       len(deletedIDs),
@@ -639,15 +631,7 @@ func (s *Server) HandleTokenCleanupStatus(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	deletedIDs := make([]string, 0, len(ids))
-	failed := 0
-	for _, id := range ids {
-		if err := s.TokenMgr.Remove(id); err != nil {
-			failed++
-			continue
-		}
-		deletedIDs = append(deletedIDs, id)
-	}
+	deletedIDs, failed := s.TokenMgr.RemoveMany(ids)
 
 	writeJSON(w, 200, map[string]interface{}{
 		"ok":            failed == 0,
@@ -925,6 +909,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		all := s.Config.GetAll()
 		all["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(all["leonardo_upload_proxy_mode"]))
 		all["leonardo_upload_proxy"] = strings.TrimSpace(toString(all["leonardo_upload_proxy"]))
+		all["auto_refresh_max_concurrency"] = normalizeConfigInt(all["auto_refresh_max_concurrency"], 5, 1, 50)
+		all["request_log_retention_limit"] = normalizeConfigInt(all["request_log_retention_limit"], 5000, 100, 100000)
 		// Mask sensitive values
 		if _, ok := all["admin_password"]; ok {
 			all["admin_password"] = "***"
@@ -950,6 +936,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	updates["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(updates["leonardo_upload_proxy_mode"]))
 	updates["leonardo_upload_proxy"] = strings.TrimSpace(toString(updates["leonardo_upload_proxy"]))
+	updates["auto_refresh_max_concurrency"] = normalizeConfigInt(updates["auto_refresh_max_concurrency"], 5, 1, 50)
+	updates["request_log_retention_limit"] = normalizeConfigInt(updates["request_log_retention_limit"], 5000, 100, 100000)
 	delete(updates, "generated_usage_mb")
 	delete(updates, "generated_usage_bytes")
 	delete(updates, "generated_file_count")
@@ -980,6 +968,20 @@ func normalizeLeonardoUploadProxyMode(raw string) string {
 	default:
 		return "basic"
 	}
+}
+
+func normalizeConfigInt(raw interface{}, defaultValue, minValue, maxValue int) int {
+	value := int(toFloat64(raw))
+	if value == 0 && raw == nil {
+		value = defaultValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 // HandleProxyTest handles POST /api/v1/proxy/test using the current form values.
@@ -1116,7 +1118,16 @@ func (s *Server) HandleLogsRunning(w http.ResponseWriter, r *http.Request) {
 		if expired := s.expireStaleRunningLogs(); expired > 0 {
 			log.Printf("[reqlog] expired %d stale running log(s) before listing running logs", expired)
 		}
-		for _, e := range s.ReqLog.Running() {
+		limit := 200
+		if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+			if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+		for _, e := range s.ReqLog.RunningLimit(limit) {
 			items = append(items, e)
 		}
 	}
@@ -1140,10 +1151,6 @@ func (s *Server) HandleLogsStats(w http.ResponseWriter, r *http.Request) {
 	rangeStr := r.URL.Query().Get("range")
 	if rangeStr == "" {
 		rangeStr = "today"
-	}
-
-	if expired := s.expireStaleRunningLogs(); expired > 0 {
-		log.Printf("[reqlog] expired %d stale running log(s) before computing log stats", expired)
 	}
 
 	if s.ReqLog == nil {

@@ -1104,10 +1104,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   let confAutoRefreshSweepIntervalMinutes = null;
+  let confAutoRefreshMaxConcurrency = null;
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
   const confGeneratedPruneSizeMb = document.getElementById("confGeneratedPruneSizeMb");
+  let confRequestLogRetentionLimit = null;
   const confUseUpstreamResultUrl = document.getElementById("confUseUpstreamResultUrl");
   const confImgBedEnabled = document.getElementById("confImgBedEnabled");
   const confImgBedApiUrl = document.getElementById("confImgBedApiUrl");
@@ -1177,6 +1179,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       confRefreshIntervalMinutes.parentElement.insertAdjacentElement("afterend", sweepGroup);
     }
     confAutoRefreshSweepIntervalMinutes = document.getElementById("confAutoRefreshSweepIntervalMinutes");
+    const existingMaxConcurrencyInput = document.getElementById("confAutoRefreshMaxConcurrency");
+    if (!existingMaxConcurrencyInput && confAutoRefreshSweepIntervalMinutes?.parentElement) {
+      const maxConcurrencyGroup = document.createElement("div");
+      maxConcurrencyGroup.className = "form-group";
+      maxConcurrencyGroup.innerHTML = `
+        <label for="confAutoRefreshMaxConcurrency">自动刷新最大并发数</label>
+        <input type="number" id="confAutoRefreshMaxConcurrency" class="input-text" min="1" max="50" step="1" placeholder="默认 5" />
+        <p class="help">范围 1-50。后台自动刷新 token 时最多同时刷新多少个；建议先用 5，稳定后再调高。</p>
+      `;
+      confAutoRefreshSweepIntervalMinutes.parentElement.insertAdjacentElement("afterend", maxConcurrencyGroup);
+    }
+    confAutoRefreshMaxConcurrency = document.getElementById("confAutoRefreshMaxConcurrency");
   }
   const jwtMarginLabel = document.querySelector('label[for="confJwtRefreshMarginMinutes"]');
   if (jwtMarginLabel) {
@@ -1187,6 +1201,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (help) {
       help.textContent = "默认 5。用于真正发请求前的兜底换新：当 JWT 剩余时间小于等于该值时，会先刷新 JWT 再发送生成、轮询或手动刷新等请求。";
     }
+  }
+  if (confGeneratedMaxSizeMb?.parentElement) {
+    const existingLogLimitInput = document.getElementById("confRequestLogRetentionLimit");
+    if (!existingLogLimitInput) {
+      const logLimitGroup = document.createElement("div");
+      logLimitGroup.className = "form-group";
+      logLimitGroup.innerHTML = `
+        <label for="confRequestLogRetentionLimit">请求日志保留上限</label>
+        <input type="number" id="confRequestLogRetentionLimit" class="input-text" min="100" max="100000" step="100" placeholder="默认 5000" />
+        <p class="help">范围 100-100000。超过上限后只保留最新日志，旧日志自动清理，避免日志页越来越慢。</p>
+      `;
+      confGeneratedMaxSizeMb.parentElement.insertAdjacentElement("beforebegin", logLimitGroup);
+    }
+    confRequestLogRetentionLimit = document.getElementById("confRequestLogRetentionLimit");
   }
 
   function isFailedOnlyFilterEnabled() {
@@ -1279,11 +1307,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confAutoRefreshSweepIntervalMinutes) {
           confAutoRefreshSweepIntervalMinutes.value = Number(data.auto_refresh_sweep_interval_minutes || 1);
         }
+        if (confAutoRefreshMaxConcurrency) {
+          confAutoRefreshMaxConcurrency.value = Math.max(1, Math.min(50, Number(data.auto_refresh_max_concurrency || 5)));
+        }
         if (confJwtRefreshMarginMinutes) {
           confJwtRefreshMarginMinutes.value = Math.max(0, Math.min(60, Number(data.jwt_refresh_margin_minutes ?? 5)));
         }
         currentBatchConcurrency = Math.max(1, Math.min(100, Number(data.batch_concurrency || 5)));
         confBatchConcurrency.value = currentBatchConcurrency;
+        if (confRequestLogRetentionLimit) {
+          confRequestLogRetentionLimit.value = Math.max(100, Math.min(100000, Number(data.request_log_retention_limit || 5000)));
+        }
         confGeneratedMaxSizeMb.value = Number(data.generated_max_size_mb || 1024);
         confGeneratedPruneSizeMb.value = Number(data.generated_prune_size_mb || 200);
         confUseUpstreamResultUrl.checked = Boolean(data.use_upstream_result_url || false);
@@ -1338,8 +1372,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         token_success_auto_disable_threshold: Math.max(1, Math.min(100000, Number(confTokenSuccessAutoDisableThreshold?.value || 2))),
         refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 10),
         auto_refresh_sweep_interval_minutes: Number(confAutoRefreshSweepIntervalMinutes?.value || 1),
+        auto_refresh_max_concurrency: Math.max(1, Math.min(50, Number(confAutoRefreshMaxConcurrency?.value || 5))),
         jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
+        request_log_retention_limit: Math.max(100, Math.min(100000, Number(confRequestLogRetentionLimit?.value || 5000))),
         generated_max_size_mb: Math.max(100, Math.min(102400, Number(confGeneratedMaxSizeMb.value || 1024))),
         generated_prune_size_mb: Math.max(10, Math.min(10240, Number(confGeneratedPruneSizeMb.value || 200))),
         use_upstream_result_url: confUseUpstreamResultUrl.checked,
@@ -1360,6 +1396,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         throw new Error("自动刷新巡检间隔必须是 1-1440 的整数分钟");
       }
 
+      if (!Number.isInteger(payload.auto_refresh_max_concurrency) || payload.auto_refresh_max_concurrency < 1 || payload.auto_refresh_max_concurrency > 50) {
+        throw new Error("自动刷新最大并发数必须是 1-50 的整数");
+      }
       if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
         throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");
       }
@@ -1368,6 +1407,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       if (!Number.isInteger(payload.batch_concurrency) || payload.batch_concurrency < 1 || payload.batch_concurrency > 100) {
         throw new Error("批量导入/积分并发数必须是 1-100 的整数");
+      }
+      if (!Number.isInteger(payload.request_log_retention_limit) || payload.request_log_retention_limit < 100 || payload.request_log_retention_limit > 100000) {
+        throw new Error("请求日志保留上限必须是 100-100000 的整数");
       }
       if (!Number.isInteger(payload.generated_max_size_mb) || payload.generated_max_size_mb < 100 || payload.generated_max_size_mb > 102400) {
         throw new Error("生成文件空间上限必须是 100-102400 的整数 MB");
@@ -2171,13 +2213,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function loadLogs() {
     if (!logsTbody) return;
+    const rangeValue = logStatsRange ? String(logStatsRange.value || "today") : "today";
+    const logParams = getLogsQueryParams();
+    const statsPromise = fetch(`/api/v1/logs/stats?range=${encodeURIComponent(rangeValue)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null);
     try {
-      const rangeValue = logStatsRange ? String(logStatsRange.value || "today") : "today";
-      const logParams = getLogsQueryParams();
-      const [runningResult, logsResult, statsResult] = await Promise.allSettled([
+      const [runningResult, logsResult] = await Promise.allSettled([
         fetch("/api/v1/logs/running?limit=200"),
         fetch(`/api/v1/logs?${logParams.toString()}`),
-        fetch(`/api/v1/logs/stats?range=${encodeURIComponent(rangeValue)}`),
       ]);
 
       let runningItems = [];
@@ -2196,18 +2240,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       renderLogsPagination();
       renderLogs(logsData.logs || [], runningItems);
 
-      if (statsResult.status === "fulfilled" && statsResult.value.ok) {
-        const statsData = await statsResult.value.json();
-        renderLogStats(statsData);
-      } else {
-        renderLogStats(null);
-      }
+      statsPromise.then((statsData) => renderLogStats(statsData));
     } catch (err) {
       logsTbody.innerHTML = `<tr><td colspan="8" class="empty-state" style="color: #ffb4bc;">${err.message || "日志加载失败"}</td></tr>`;
       logsRunningTotal = 0;
       logsTotalPages = Math.max(1, logsCurrentPage || 1);
       renderLogsPagination();
-      renderLogStats(null);
+      statsPromise.then((statsData) => renderLogStats(statsData));
     }
   }
 
