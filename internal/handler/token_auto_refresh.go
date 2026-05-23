@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -62,7 +63,10 @@ func (s *Server) runTokenAutoRefreshSweep() {
 	}
 
 	threshold := s.tokenAutoRefreshThreshold()
+	maxConcurrency := s.tokenAutoRefreshMaxConcurrency()
 	now := time.Now()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrency)
 
 	for _, item := range tokens {
 		tokenID := strings.TrimSpace(toString(item["id"]))
@@ -83,8 +87,15 @@ func (s *Server) runTokenAutoRefreshSweep() {
 		if !s.shouldRunTokenAutoRefresh(item, tokenID, now, threshold) {
 			continue
 		}
-		s.refreshLeonardoTokenByID(tokenID)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.refreshLeonardoTokenByID(id)
+		}(tokenID)
 	}
+	wg.Wait()
 }
 
 func (s *Server) triggerTokenAutoRefresh(tokenID string) {
@@ -185,6 +196,20 @@ func (s *Server) tokenAutoRefreshSweepInterval() time.Duration {
 		minutes = 1440
 	}
 	return time.Duration(minutes) * time.Minute
+}
+
+func (s *Server) tokenAutoRefreshMaxConcurrency() int {
+	maxConcurrency := 5
+	if s != nil && s.Config != nil {
+		maxConcurrency = s.Config.GetInt("auto_refresh_max_concurrency", 0)
+	}
+	if maxConcurrency < 1 {
+		maxConcurrency = 5
+	}
+	if maxConcurrency > 50 {
+		maxConcurrency = 50
+	}
+	return maxConcurrency
 }
 
 func (s *Server) shouldRunTokenAutoRefresh(item map[string]interface{}, tokenID string, now time.Time, threshold time.Duration) bool {

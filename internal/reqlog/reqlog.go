@@ -38,11 +38,18 @@ type Entry struct {
 
 // Store is a thread-safe log store with JSON file persistence.
 type Store struct {
-	mu        sync.Mutex
-	entries   []Entry
-	filePath  string
-	jsonStore store.JSONStore
-	jsonKey   string
+	mu         sync.Mutex
+	entries    []Entry
+	filePath   string
+	jsonStore  store.JSONStore
+	jsonKey    string
+	stats      map[string]statsCacheEntry
+	maxEntries int
+}
+
+type statsCacheEntry struct {
+	expiresAt time.Time
+	value     map[string]interface{}
 }
 
 // NewStore creates a new log store. If filePath is non-empty, loads existing
@@ -54,10 +61,11 @@ func NewStore(filePath string) *Store {
 // NewStoreWithJSON creates a new log store with optional JSON blob persistence.
 func NewStoreWithJSON(filePath string, jsonStore store.JSONStore, jsonKey string) *Store {
 	s := &Store{
-		entries:   make([]Entry, 0),
-		filePath:  filePath,
-		jsonStore: jsonStore,
-		jsonKey:   strings.TrimSpace(jsonKey),
+		entries:    make([]Entry, 0),
+		filePath:   filePath,
+		jsonStore:  jsonStore,
+		jsonKey:    strings.TrimSpace(jsonKey),
+		maxEntries: 5000,
 	}
 	if jsonStore != nil && strings.TrimSpace(jsonKey) != "" {
 		s.loadFromJSONStore()
@@ -124,6 +132,8 @@ func (s *Store) loadFromJSONStore() {
 
 // save persists all entries. Must be called with s.mu held.
 func (s *Store) save() {
+	s.stats = nil
+	s.pruneLocked()
 	if s.jsonStore != nil && s.jsonKey != "" {
 		if err := s.jsonStore.SaveJSON(s.jsonKey, s.entries); err != nil {
 			log.Printf("[reqlog] failed to save %s: %v", s.jsonKey, err)
@@ -160,6 +170,19 @@ func (s *Store) Add(entry Entry) {
 	s.entries = append([]Entry{entry}, s.entries...)
 
 	s.save()
+}
+
+// SetMaxEntries caps persisted logs to the newest maxEntries rows.
+func (s *Store) SetMaxEntries(maxEntries int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.maxEntries = normalizeMaxEntries(maxEntries)
+	before := len(s.entries)
+	s.pruneLocked()
+	if len(s.entries) != before {
+		s.save()
+	}
 }
 
 // UpdateByGenerationID updates an entry matching the generation ID.
@@ -228,47 +251,53 @@ func (s *Store) List(page, pageSize int, failedOnly bool) ([]Entry, int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Filter — exclude IN_PROGRESS items (they are shown via Running())
-	var filtered []Entry
-	for _, e := range s.entries {
-		if normalizeTaskStatus(e.TaskStatus) == "IN_PROGRESS" {
-			continue
-		}
-		if failedOnly && normalizeTaskStatus(e.TaskStatus) != "FAILED" {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-
-	total := len(filtered)
 	if pageSize <= 0 {
 		pageSize = 50
-	}
-	totalPages := (total + pageSize - 1) / pageSize
-	if totalPages < 1 {
-		totalPages = 1
 	}
 	if page < 1 {
 		page = 1
 	}
+
+	collectPage := func(targetPage int) ([]Entry, int) {
+		start := (targetPage - 1) * pageSize
+		result := make([]Entry, 0, pageSize)
+		total := 0
+		for _, e := range s.entries {
+			taskStatus := normalizeTaskStatus(e.TaskStatus)
+			if taskStatus == "IN_PROGRESS" {
+				continue
+			}
+			if failedOnly && taskStatus != "FAILED" {
+				continue
+			}
+			if total >= start && len(result) < pageSize {
+				result = append(result, e)
+			}
+			total++
+		}
+		return result, total
+	}
+
+	result, total := collectPage(page)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
 	if page > totalPages {
 		page = totalPages
+		result, _ = collectPage(page)
 	}
 
-	start := (page - 1) * pageSize
-	end := start + pageSize
-	if start >= total {
-		return []Entry{}, page, totalPages
-	}
-	if end > total {
-		end = total
-	}
-
-	return filtered[start:end], page, totalPages
+	return result, page, totalPages
 }
 
 // Running returns entries that are still in progress.
 func (s *Store) Running() []Entry {
+	return s.RunningLimit(0)
+}
+
+// RunningLimit returns entries that are still in progress, capped by limit when positive.
+func (s *Store) RunningLimit(limit int) []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -276,6 +305,9 @@ func (s *Store) Running() []Entry {
 	for _, e := range s.entries {
 		if normalizeTaskStatus(e.TaskStatus) == "IN_PROGRESS" {
 			result = append(result, e)
+			if limit > 0 && len(result) >= limit {
+				break
+			}
 		}
 	}
 	return result
@@ -351,6 +383,12 @@ func (s *Store) Stats(rangeStr string) map[string]interface{} {
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	if s.stats != nil {
+		if cached, ok := s.stats[rangeStr]; ok && now.Before(cached.expiresAt) {
+			return cloneStatsMap(cached.value)
+		}
+	}
+
 	var startTime time.Time
 
 	switch rangeStr {
@@ -388,7 +426,7 @@ func (s *Store) Stats(rangeStr string) map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"generated_images": images,
 		"generated_videos": videos,
 		"total_requests":   total,
@@ -396,6 +434,14 @@ func (s *Store) Stats(rangeStr string) map[string]interface{} {
 		"start_ts":         startTs,
 		"end_ts":           float64(now.Unix()),
 	}
+	if s.stats == nil {
+		s.stats = make(map[string]statsCacheEntry)
+	}
+	s.stats[rangeStr] = statsCacheEntry{
+		expiresAt: now.Add(15 * time.Second),
+		value:     cloneStatsMap(result),
+	}
+	return result
 }
 
 // Clear removes all entries. Returns the count cleared.
@@ -407,6 +453,33 @@ func (s *Store) Clear() int {
 	s.entries = s.entries[:0]
 	s.save()
 	return n
+}
+
+func cloneStatsMap(src map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func normalizeMaxEntries(maxEntries int) int {
+	if maxEntries < 100 {
+		return 5000
+	}
+	if maxEntries > 100000 {
+		return 100000
+	}
+	return maxEntries
+}
+
+func (s *Store) pruneLocked() {
+	limit := normalizeMaxEntries(s.maxEntries)
+	s.maxEntries = limit
+	if len(s.entries) <= limit {
+		return
+	}
+	s.entries = s.entries[:limit]
 }
 
 func normalizeTaskStatus(status string) string {

@@ -718,6 +718,13 @@ func (s *Server) reloadRuntimeClients() {
 			_ = s.LeonardoClient.SetUploadProxyConfig("basic", "")
 		}
 	}
+	if s.ReqLog != nil {
+		limit := 5000
+		if s.Config != nil {
+			limit = s.Config.GetInt("request_log_retention_limit", 5000)
+		}
+		s.ReqLog.SetMaxEntries(limit)
+	}
 	// 保留现有 Leonardo 会话缓存，避免仅仅因为保存系统配置就丢失 JWT，
 	// 导致下一次手动刷新总是重新续成 1 小时。
 	s.leoSessionMu.Lock()

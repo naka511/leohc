@@ -1,6 +1,6 @@
 # Leo-Go
 
-基于 Go 的 Seedance / Leonardo 视频生成网关，提供：
+基于 Go 的视频生成网关，提供：
 
 - OpenAI 兼容接口
   - `GET /v1/models`

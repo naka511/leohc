@@ -217,6 +217,46 @@ func (m *Manager) Remove(tokenID string) error {
 	return nil
 }
 
+// RemoveMany removes multiple tokens by ID with a single save.
+func (m *Manager) RemoveMany(tokenIDs []string) ([]string, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(tokenIDs) == 0 {
+		return nil, 0
+	}
+
+	wanted := make(map[string]struct{}, len(tokenIDs))
+	for _, id := range tokenIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, 0
+	}
+
+	deletedIDs := make([]string, 0, len(wanted))
+	kept := m.tokens[:0]
+	for _, t := range m.tokens {
+		if t == nil {
+			continue
+		}
+		if _, ok := wanted[t.ID]; ok {
+			deletedIDs = append(deletedIDs, t.ID)
+			delete(wanted, t.ID)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	m.tokens = kept
+	if len(deletedIDs) > 0 {
+		m.save()
+	}
+	return deletedIDs, len(wanted)
+}
+
 // GetByID returns a token by its ID.
 func (m *Manager) GetByID(tokenID string) map[string]interface{} {
 	m.mu.Lock()

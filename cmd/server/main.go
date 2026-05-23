@@ -87,6 +87,7 @@ func main() {
 	if redisStore != nil {
 		reqLogStore = reqlog.NewStoreWithJSON(reqLogFile, redisStore, "request_logs")
 	}
+	reqLogStore.SetMaxEntries(cfg.GetInt("request_log_retention_limit", 5000))
 	if expired := reqLogStore.ExpireStaleRunning(time.Duration(cfg.GetInt("generate_timeout", 600))*time.Second, time.Now()); expired > 0 {
 		log.Printf("[reqlog] expired %d stale running log(s) during startup", expired)
 	}
