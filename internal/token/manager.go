@@ -42,6 +42,25 @@ type Token struct {
 	MaxCredits         float64 `json:"max_credits,omitempty"`
 }
 
+// ImportedCookieInput is a token-pool cookie import item.
+type ImportedCookieInput struct {
+	Value        string
+	AccountName  string
+	AccountEmail string
+	UserID       string
+	Source       string
+	AutoRefresh  bool
+	Status       string
+}
+
+// ImportedCookieResult is the outcome of importing one cookie.
+type ImportedCookieResult struct {
+	Info        map[string]interface{}
+	Overwritten bool
+	Duplicate   bool
+	Err         error
+}
+
 // Manager manages the token pool with thread-safe operations.
 type Manager struct {
 	mu      sync.Mutex
@@ -686,6 +705,54 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 // UpsertImportedCookie stores a Leonardo cookie imported by an external
 // automation, replacing the existing token for the same account when possible.
 func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID, source string, autoRefresh bool) (map[string]interface{}, bool, bool, error) {
+	info, overwritten, duplicate, err := m.upsertImportedCookie(value, accountName, accountEmail, userID, source, autoRefresh, "active", true)
+	return info, overwritten, duplicate, err
+}
+
+// UpsertImportedCookies stores external cookie imports with one lock and one save.
+func (m *Manager) UpsertImportedCookies(inputs []ImportedCookieInput) []ImportedCookieResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	results := make([]ImportedCookieResult, len(inputs))
+	changed := false
+	for i, input := range inputs {
+		t, overwritten, duplicate, err := m.upsertImportedCookieLocked(input.Value, input.AccountName, input.AccountEmail, input.UserID, input.Source, input.AutoRefresh, input.Status)
+		if err != nil {
+			results[i].Err = err
+			continue
+		}
+		results[i].Info = tokenToMap(t)
+		results[i].Overwritten = overwritten
+		results[i].Duplicate = duplicate
+		changed = true
+	}
+	if changed {
+		m.save()
+	}
+	return results
+}
+
+func (m *Manager) upsertImportedCookie(value, accountName, accountEmail, userID, source string, autoRefresh bool, status string, save bool) (map[string]interface{}, bool, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, false, false, fmt.Errorf("token value is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t, overwritten, duplicate, err := m.upsertImportedCookieLocked(value, accountName, accountEmail, userID, source, autoRefresh, status)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if save {
+		m.save()
+	}
+	return tokenToMap(t), overwritten, duplicate, nil
+}
+
+func (m *Manager) upsertImportedCookieLocked(value, accountName, accountEmail, userID, source string, autoRefresh bool, status string) (*Token, bool, bool, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, false, false, fmt.Errorf("token value is required")
@@ -695,14 +762,17 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 	now := currentTimestamp()
 	accountEmail = strings.TrimSpace(accountEmail)
 	userID = strings.TrimSpace(userID)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		status = "active"
+	}
 
 	for _, t := range m.tokens {
 		if t.ID == tokenID || strings.TrimSpace(t.Value) == value {
 			t.Value = value
-			t.Status = "active"
+			if status == "active" || t.Status != "active" {
+				t.Status = status
+			}
 			t.Fails = 0
 			t.ErrorUntil = 0
 			if accountName != "" {
@@ -718,8 +788,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 				t.Source = source
 			}
 			t.AutoRefresh = autoRefresh
-			m.save()
-			return tokenToMap(t), false, true, nil
+			return t, false, true, nil
 		}
 	}
 
@@ -735,7 +804,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 
 		t.ID = tokenID
 		t.Value = value
-		t.Status = "active"
+		t.Status = status
 		t.Fails = 0
 		t.ErrorUntil = 0
 		t.SuccessCount = 0
@@ -752,8 +821,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 			t.Source = source
 		}
 		t.AutoRefresh = autoRefresh
-		m.save()
-		return tokenToMap(t), true, false, nil
+		return t, true, false, nil
 	}
 
 	t := &Token{
@@ -761,7 +829,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 		Value:         value,
 		Platform:      "leonardo",
 		TokenType:     "session_token",
-		Status:        "active",
+		Status:        status,
 		AddedAt:       now,
 		AccountName:   accountName,
 		AccountEmail:  accountEmail,
@@ -770,8 +838,7 @@ func (m *Manager) UpsertImportedCookie(value, accountName, accountEmail, userID,
 		AutoRefresh:   autoRefresh,
 	}
 	m.tokens = append(m.tokens, t)
-	m.save()
-	return tokenToMap(t), false, false, nil
+	return t, false, false, nil
 }
 
 // SetAutoRefresh sets the auto_refresh flag for a token by ID.

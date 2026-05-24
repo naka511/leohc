@@ -20,6 +20,7 @@ import (
 
 	"leo-go/internal/provider/leonardo"
 	"leo-go/internal/reqlog"
+	"leo-go/internal/token"
 )
 
 // HandleAuthLogin handles POST /api/v1/auth/login.
@@ -1481,11 +1482,18 @@ func (s *Server) HandleTokenCookieImport(w http.ResponseWriter, r *http.Request)
 func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source string, autoRefresh bool) map[string]interface{} {
 	items := make([]map[string]interface{}, 0, len(inputs))
 	seen := make(map[string]struct{}, len(inputs))
+	batchInputs := make([]token.ImportedCookieInput, 0, len(inputs))
+	itemIndexes := make([]int, 0, len(inputs))
 	successCount := 0
 	failedCount := 0
 	duplicateCount := 0
 	requestDuplicateCount := 0
 	overwrittenCount := 0
+	backgroundRefreshIDs := make([]string, 0, len(inputs))
+	desiredStatus := "pending"
+	if !autoRefresh || s.LeonardoClient == nil {
+		desiredStatus = "active"
+	}
 
 	for idx, input := range inputs {
 		item := map[string]interface{}{
@@ -1507,37 +1515,31 @@ func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source str
 		seen[input.Cookie] = struct{}{}
 
 		accountName := strings.TrimSpace(input.Name)
-		accountEmail := ""
-		accountUserID := ""
-		var credits *leonardo.Credits
-		var expiresAt float64
+		batchInputs = append(batchInputs, token.ImportedCookieInput{
+			Value:       input.Cookie,
+			AccountName: accountName,
+			Source:      source,
+			AutoRefresh: autoRefresh,
+			Status:      desiredStatus,
+		})
+		itemIndexes = append(itemIndexes, len(items))
+		items = append(items, item)
+	}
 
-		if s.LeonardoClient != nil {
-			session, creditInfo, err := s.validateLeonardoToken("", input.Cookie)
-			if err != nil {
-				failedCount++
-				item["status"] = "failed"
-				item["detail"] = err.Error()
-				items = append(items, item)
-				continue
-			}
-			if session != nil {
-				accountEmail = strings.TrimSpace(session.Email)
-				accountUserID = strings.TrimSpace(session.HasuraUserID)
-				expiresAt = float64(session.JWTExpiry.Unix())
-				if accountName == "" {
-					accountName = accountEmail
-				}
-			}
-			credits = creditInfo
+	results := s.TokenMgr.UpsertImportedCookies(batchInputs)
+	for resultIdx, result := range results {
+		if resultIdx >= len(itemIndexes) {
+			break
 		}
-
-		info, overwritten, duplicate, err := s.TokenMgr.UpsertImportedCookie(input.Cookie, accountName, accountEmail, accountUserID, source, autoRefresh)
+		item := items[itemIndexes[resultIdx]]
+		info := result.Info
+		overwritten := result.Overwritten
+		duplicate := result.Duplicate
+		err := result.Err
 		if err != nil {
 			failedCount++
 			item["status"] = "failed"
 			item["detail"] = err.Error()
-			items = append(items, item)
 			continue
 		}
 
@@ -1546,33 +1548,22 @@ func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source str
 			item["token_id"] = tokenID
 			item["profile_id"] = tokenID
 		}
+		accountName := strings.TrimSpace(batchInputs[resultIdx].AccountName)
 		if accountName != "" {
 			item["token_account_name"] = accountName
 			item["profile_name"] = accountName
 		}
-		if accountEmail != "" {
-			item["token_account_email"] = accountEmail
-		}
-		if accountUserID != "" {
-			item["token_account_user_id"] = accountUserID
-		}
-		if expiresAt > 0 && tokenID != "" {
-			_ = s.TokenMgr.UpdateExpiry(tokenID, expiresAt)
-			item["expires_at"] = expiresAt
-		}
-		if credits != nil && tokenID != "" {
-			totalCredits := float64(credits.SubscriptionTokens + credits.PaidTokens + credits.RolloverTokens)
-			_ = s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), totalCredits)
-			item["credits"] = credits.TotalTokens
-			item["credits_total"] = totalCredits
+		if tokenID != "" && autoRefresh && s.LeonardoClient != nil {
+			backgroundRefreshIDs = append(backgroundRefreshIDs, tokenID)
 		}
 
 		successCount++
-		item["status"] = "active"
-		item["detail"] = "imported"
+		item["status"] = "queued_refresh"
+		item["detail"] = "imported; background refresh queued"
 		item["auto_refresh"] = autoRefresh
 		item["overwritten"] = overwritten
 		item["duplicate"] = duplicate
+		item["token_status"] = info["status"]
 		if overwritten {
 			overwrittenCount++
 			item["detail"] = "updated existing account cookie"
@@ -1581,7 +1572,14 @@ func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source str
 			duplicateCount++
 			item["detail"] = "cookie already existed"
 		}
-		items = append(items, item)
+		if !autoRefresh || s.LeonardoClient == nil {
+			item["status"] = "active"
+			item["detail"] = "imported"
+		}
+	}
+
+	if len(backgroundRefreshIDs) > 0 {
+		s.triggerTokenAutoRefreshBatch(backgroundRefreshIDs)
 	}
 
 	return map[string]interface{}{
@@ -1592,7 +1590,12 @@ func (s *Server) importCookiesToTokenPool(inputs []cookieImportInput, source str
 		"duplicate_count":         duplicateCount,
 		"request_duplicate_count": requestDuplicateCount,
 		"overwritten_count":       overwrittenCount,
-		"items":                   items,
+		"background_refresh": map[string]interface{}{
+			"queued_count":       len(backgroundRefreshIDs),
+			"max_concurrency":    s.tokenImportRefreshConcurrency(),
+			"runs_in_background": len(backgroundRefreshIDs) > 0,
+		},
+		"items": items,
 	}
 }
 

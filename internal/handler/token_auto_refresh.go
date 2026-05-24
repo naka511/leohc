@@ -106,6 +106,58 @@ func (s *Server) triggerTokenAutoRefresh(tokenID string) {
 	go s.refreshLeonardoTokenByID(tokenID)
 }
 
+func (s *Server) triggerTokenAutoRefreshBatch(tokenIDs []string) {
+	if len(tokenIDs) == 0 || s == nil || s.LeonardoClient == nil {
+		return
+	}
+
+	seen := make(map[string]struct{}, len(tokenIDs))
+	ids := make([]string, 0, len(tokenIDs))
+	for _, id := range tokenIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	maxConcurrency := s.tokenImportRefreshConcurrency()
+	go func() {
+		log.Printf("[token] queued background refresh for %d imported token(s), concurrency=%d", len(ids), maxConcurrency)
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, maxConcurrency)
+		for _, id := range ids {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(tokenID string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				s.refreshLeonardoTokenByID(tokenID)
+			}(id)
+		}
+		wg.Wait()
+		log.Printf("[token] completed background refresh queue for %d imported token(s)", len(ids))
+	}()
+}
+
+func (s *Server) tokenImportRefreshConcurrency() int {
+	maxConcurrency := s.tokenAutoRefreshMaxConcurrency()
+	if maxConcurrency > 5 {
+		maxConcurrency = 5
+	}
+	if maxConcurrency < 1 {
+		maxConcurrency = 1
+	}
+	return maxConcurrency
+}
+
 func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 	if s == nil || s.TokenMgr == nil || s.LeonardoClient == nil {
 		return
