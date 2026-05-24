@@ -131,6 +131,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const STATUS_MAP = {
     "active": "生效中",
+    "pending": "待刷新",
     "exhausted": "额度耗尽",
     "invalid": "已失效",
     "abnormal": "异常",
@@ -138,6 +139,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     "disabled": "已禁用"
   };
   if (tokenStatusFilter && !tokenStatusFilter.querySelector('option[value="abnormal"]')) {
+    if (!tokenStatusFilter.querySelector('option[value="pending"]')) {
+      const pendingOption = document.createElement("option");
+      pendingOption.value = "pending";
+      pendingOption.textContent = STATUS_MAP.pending;
+      const invalidOption = tokenStatusFilter.querySelector('option[value="invalid"]');
+      if (invalidOption) {
+        tokenStatusFilter.insertBefore(pendingOption, invalidOption);
+      } else {
+        tokenStatusFilter.appendChild(pendingOption);
+      }
+    }
     const abnormalOption = document.createElement("option");
     abnormalOption.value = "abnormal";
     abnormalOption.textContent = STATUS_MAP.abnormal;

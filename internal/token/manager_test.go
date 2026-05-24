@@ -5,7 +5,8 @@ import (
 )
 
 type memoryTokenStore struct {
-	rows []map[string]interface{}
+	rows  []map[string]interface{}
+	saves int
 }
 
 func (s *memoryTokenStore) LoadTokens() ([]map[string]interface{}, error) {
@@ -14,6 +15,7 @@ func (s *memoryTokenStore) LoadTokens() ([]map[string]interface{}, error) {
 
 func (s *memoryTokenStore) ReplaceTokens(tokens []map[string]interface{}) error {
 	s.rows = append([]map[string]interface{}(nil), tokens...)
+	s.saves++
 	return nil
 }
 
@@ -51,5 +53,53 @@ func TestRemoveManyRemovesTokensWithMissingCount(t *testing.T) {
 	}
 	if got := remaining[0]["id"]; got != GenerateTokenID("token-b") {
 		t.Fatalf("expected token-b to remain, got %v", got)
+	}
+}
+
+func TestUpsertImportedCookiesSavesOnceAndMarksPending(t *testing.T) {
+	t.Parallel()
+
+	store := &memoryTokenStore{}
+	m := NewManager(store)
+
+	results := m.UpsertImportedCookies([]ImportedCookieInput{
+		{Value: "cookie-a", AccountName: "A", Source: "api_cookie_import", AutoRefresh: true, Status: "pending"},
+		{Value: "cookie-b", AccountName: "B", Source: "api_cookie_import", AutoRefresh: true, Status: "pending"},
+	})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if store.saves != 1 {
+		t.Fatalf("expected one save for batch import, got %d", store.saves)
+	}
+	for _, result := range results {
+		if result.Err != nil {
+			t.Fatalf("unexpected import error: %v", result.Err)
+		}
+		if got := result.Info["status"]; got != "pending" {
+			t.Fatalf("expected pending status, got %v", got)
+		}
+	}
+}
+
+func TestUpsertImportedCookiesKeepsActiveDuplicateActive(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&memoryTokenStore{})
+	if _, _, _, err := m.UpsertImportedCookie("cookie-a", "A", "", "", "api_cookie_import", true); err != nil {
+		t.Fatalf("upsert active cookie: %v", err)
+	}
+
+	results := m.UpsertImportedCookies([]ImportedCookieInput{
+		{Value: "cookie-a", AccountName: "A", Source: "api_cookie_import", AutoRefresh: true, Status: "pending"},
+	})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Duplicate {
+		t.Fatalf("expected duplicate result")
+	}
+	if got := results[0].Info["status"]; got != "active" {
+		t.Fatalf("expected active duplicate to remain active, got %v", got)
 	}
 }
