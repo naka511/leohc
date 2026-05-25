@@ -180,7 +180,7 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 	}
 
 	status := strings.ToLower(strings.TrimSpace(toString(info["status"])))
-	if status == "disabled" || status == "exhausted" {
+	if status == "disabled" || status == "exhausted" || status == "abnormal" {
 		return
 	}
 
@@ -191,7 +191,9 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 
 	session, credits, err := s.validateLeonardoToken(tokenID, rawToken)
 	if err != nil {
-		if shouldMarkTokenInvalidOnRefreshError(err) {
+		if shouldMarkTokenAbnormalOnRefreshError(err) {
+			s.markTokenAbnormalAndDisableAutoRefresh(tokenID, err.Error())
+		} else if shouldMarkTokenInvalidOnRefreshError(err) {
 			if setErr := s.TokenMgr.SetStatus(tokenID, "invalid"); setErr != nil {
 				log.Printf("[token] auto-refresh failed to mark token invalid for %s: %v", tokenID, setErr)
 			}
@@ -326,6 +328,28 @@ func shouldMarkTokenInvalidOnRefreshError(err error) bool {
 		strings.Contains(msg, "graphql returned 403") ||
 		strings.Contains(msg, "unauthorized") ||
 		strings.Contains(msg, "forbidden")
+}
+
+func shouldMarkTokenAbnormalOnRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no jwt found in session response") ||
+		strings.Contains(msg, "body keys: [session user]")
+}
+
+func (s *Server) markTokenAbnormalAndDisableAutoRefresh(tokenID, reason string) {
+	if s == nil || s.TokenMgr == nil {
+		return
+	}
+	if err := s.TokenMgr.SetStatus(tokenID, "abnormal"); err != nil {
+		log.Printf("[token] failed to mark token abnormal for %s: %v", tokenID, err)
+	}
+	if err := s.TokenMgr.SetAutoRefresh(tokenID, false); err != nil {
+		log.Printf("[token] failed to disable auto-refresh for abnormal token %s: %v", tokenID, err)
+	}
+	log.Printf("[token] marked token abnormal and disabled auto-refresh for %s: %s", tokenID, reason)
 }
 
 func toBool(v interface{}) bool {

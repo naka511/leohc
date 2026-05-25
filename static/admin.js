@@ -671,6 +671,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           detail = await res.text();
         }
         showToast(`Token 刷新失败：${detail || "unknown error"}`, true);
+        await loadTokens();
         return;
       }
       const data = await res.json();
@@ -954,7 +955,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (cleanupInvalidTokensBtn) {
     cleanupInvalidTokensBtn.addEventListener("click", () => {
-      openCleanupConfirm("invalid", "已失效", cleanupInvalidTokensBtn);
+      openCleanupConfirm("abnormal", "异常", cleanupInvalidTokensBtn);
     });
   }
 
