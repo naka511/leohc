@@ -604,8 +604,8 @@ func (s *Server) HandleTokenCleanupStatus(w http.ResponseWriter, r *http.Request
 	}
 
 	status := strings.ToLower(strings.TrimSpace(body.Status))
-	if status != "invalid" && status != "exhausted" {
-		writeJSON(w, 400, map[string]string{"detail": "status must be invalid or exhausted"})
+	if status != "invalid" && status != "exhausted" && status != "abnormal" {
+		writeJSON(w, 400, map[string]string{"detail": "status must be invalid, exhausted, or abnormal"})
 		return
 	}
 
@@ -627,6 +627,10 @@ func (s *Server) HandleTokenCleanupStatus(w http.ResponseWriter, r *http.Request
 			}
 		case "exhausted":
 			if tokenStatus == "exhausted" {
+				ids = append(ids, tokenID)
+			}
+		case "abnormal":
+			if tokenStatus == "abnormal" {
 				ids = append(ids, tokenID)
 			}
 		}
@@ -1189,6 +1193,10 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if platform == "leonardo" && s.LeonardoClient != nil {
 		session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
 		if err != nil {
+			abnormal := shouldMarkTokenAbnormalOnRefreshError(err)
+			if abnormal {
+				s.markTokenAbnormalAndDisableAutoRefresh(tokenID, err.Error())
+			}
 			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
 				"ok": false, "detail": "Token刷新失败: " + err.Error(),
 			})
@@ -1995,6 +2003,10 @@ func (s *Server) runTokenRefreshBatchJob(jobID string, ids []string) {
 				if err != nil {
 					status = "failed"
 					detail = err.Error()
+					if shouldMarkTokenAbnormalOnRefreshError(err) {
+						status = "abnormal"
+						s.markTokenAbnormalAndDisableAutoRefresh(id, err.Error())
+					}
 					s.tokenRefreshJobMu.Lock()
 					job := s.tokenRefreshJobs[jobID]
 					if job != nil {
@@ -3724,17 +3736,22 @@ func isInvalidLeonardoTokenError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if shouldMarkTokenAbnormalOnRefreshError(err) {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "invalid") ||
 		strings.Contains(msg, "expired") ||
 		strings.Contains(msg, "unauthorized") ||
-		strings.Contains(msg, "401") ||
-		strings.Contains(msg, "no jwt found")
+		strings.Contains(msg, "401")
 }
 
 func isAbnormalLeonardoTokenError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if shouldMarkTokenAbnormalOnRefreshError(err) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "403") ||
