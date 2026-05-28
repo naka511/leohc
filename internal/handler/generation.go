@@ -740,8 +740,8 @@ func normalizeVideoModelID(modelID string) (string, bool) {
 		return "seedance-2.0", true
 	case "video-2.0-fast", "seedance-2.0-fast":
 		return "seedance-2.0-fast", true
-	case "sora-2":
-		return "sora-2", true
+	case "sora-2", "sora2":
+		return "sora2", true
 	case "ko3", "kling-o3", "kling-video-o-3":
 		return "kling-video-o-3", true
 	default:
@@ -755,6 +755,8 @@ func publicVideoModelID(modelID string) string {
 		return "video-2.0"
 	case "seedance-2.0-fast", "video-2.0-fast":
 		return "video-2.0-fast"
+	case "sora2", "sora-2":
+		return "sora-2"
 	case "kling-video-o-3", "kling-o3", "ko3":
 		return "ko3"
 	default:
@@ -763,7 +765,8 @@ func publicVideoModelID(modelID string) string {
 }
 
 func isSora2ModelID(modelID string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+	modelID = strings.TrimSpace(modelID)
+	return strings.EqualFold(modelID, "sora-2") || strings.EqualFold(modelID, "sora2")
 }
 
 func isKlingO3ModelID(modelID string) bool {

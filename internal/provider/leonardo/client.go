@@ -758,7 +758,8 @@ func inferResolutionModeForModel(modelID string, width int, height int) string {
 }
 
 func isSora2Model(modelID string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+	modelID = strings.TrimSpace(modelID)
+	return strings.EqualFold(modelID, "sora-2") || strings.EqualFold(modelID, "sora2")
 }
 
 func isKlingO3Model(modelID string) bool {
@@ -854,6 +855,9 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	genReq.Model = strings.TrimSpace(genReq.Model)
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
+	}
+	if strings.EqualFold(genReq.Model, "sora-2") {
+		genReq.Model = "sora2"
 	}
 	if strings.EqualFold(genReq.Model, "kling-o3") || strings.EqualFold(genReq.Model, "ko3") {
 		genReq.Model = "kling-video-o-3"

@@ -10,11 +10,14 @@ func TestNormalizeVideoModelIDSupportsSora2(t *testing.T) {
 	if !ok {
 		t.Fatal("normalizeVideoModelID did not accept sora-2")
 	}
-	if modelID != "sora-2" {
-		t.Fatalf("modelID = %q, want sora-2", modelID)
+	if modelID != "sora2" {
+		t.Fatalf("modelID = %q, want sora2", modelID)
 	}
 	if publicVideoModelID(modelID) != "sora-2" {
 		t.Fatalf("publicVideoModelID(%q) = %q, want sora-2", modelID, publicVideoModelID(modelID))
+	}
+	if aliasModelID, ok := normalizeVideoModelID("sora2"); !ok || aliasModelID != "sora2" {
+		t.Fatalf("normalizeVideoModelID(sora2) = %q, %v; want sora2, true", aliasModelID, ok)
 	}
 }
 
