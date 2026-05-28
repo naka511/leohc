@@ -247,6 +247,14 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	if klingO3VideoRefMode {
 		width, height = 0, 0
 	}
+	if aspectRatio := strings.TrimSpace(toString(data["aspect_ratio"])); aspectRatio != "" {
+		aspectWidth, aspectHeight, ok := videoSizeForAspectRatio(modelID, aspectRatio)
+		if !ok {
+			writeJSON(w, 400, errorResp("unsupported aspect_ratio for model", "invalid_request_error"))
+			return
+		}
+		width, height = aspectWidth, aspectHeight
+	}
 	if size, ok := data["size"].(string); ok && size != "" {
 		parts := strings.Split(size, "x")
 		if len(parts) == 2 {
@@ -353,7 +361,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				"created":    submission.CreatedAt.Unix(),
 				"model":      responseModelID,
 				"status":     "in_progress",
-				"poll_url":   fmt.Sprintf("/v1/video/generations/%s", submission.GenerationID),
+				"poll_url":   videoGenerationPollURL(r.URL.Path, submission.GenerationID),
 				"request_id": submission.GenerationID,
 			})
 			return
@@ -416,7 +424,7 @@ func (s *Server) HandleVideoGenerationStatus(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	generationID := extractPathParam(r.URL.Path, "/v1/video/generations/")
+	generationID := videoGenerationIDFromPath(r.URL.Path)
 	if generationID == "" {
 		writeJSON(w, 400, errorResp("generation id is required", "invalid_request_error"))
 		return
@@ -805,6 +813,47 @@ func defaultVideoSize(modelID string) (int, int) {
 		return 1080, 1920
 	}
 	return 1280, 720
+}
+
+func videoSizeForAspectRatio(modelID string, aspectRatio string) (int, int, bool) {
+	aspectRatio = strings.TrimSpace(aspectRatio)
+	switch aspectRatio {
+	case "16:9":
+		if isKlingO3ModelID(modelID) {
+			return 1920, 1080, true
+		}
+		return 1280, 720, true
+	case "9:16":
+		if isKlingO3ModelID(modelID) {
+			return 1080, 1920, true
+		}
+		return 720, 1280, true
+	case "1:1":
+		if isSora2ModelID(modelID) {
+			return 0, 0, false
+		}
+		if isKlingO3ModelID(modelID) {
+			return 1440, 1440, true
+		}
+		return 960, 960, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func videoGenerationPollURL(requestPath string, generationID string) string {
+	prefix := "/v1/video/generations"
+	if strings.HasPrefix(requestPath, "/v1/video/async-generations") {
+		prefix = "/v1/video/async-generations"
+	}
+	return fmt.Sprintf("%s/%s", prefix, generationID)
+}
+
+func videoGenerationIDFromPath(path string) string {
+	if id := extractPathParam(path, "/v1/video/generations/"); id != "" {
+		return id
+	}
+	return extractPathParam(path, "/v1/video/async-generations/")
 }
 
 func isAllowedSora2Duration(duration int) bool {

@@ -206,8 +206,9 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 Async change:
 
 - `POST /v1/video/generations` now submits the job only.
+- `POST /v1/video/async-generations` is also accepted as a compatibility alias.
 - The submit endpoint returns `202 Accepted` with `generation_id`.
-- Clients must poll `GET /v1/video/generations/{generation_id}` until the job reaches `succeeded` or `failed`.
+- Clients must poll `GET /v1/video/generations/{generation_id}` or `GET /v1/video/async-generations/{generation_id}` until the job reaches `succeeded` or `failed`.
 
 Submit response example:
 
@@ -416,6 +417,21 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
+`sora2` also accepts `aspect_ratio` and `async` compatibility fields:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/async-generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2",
+    "prompt": "一个美食节目镜头，厨师把意大利面装盘，暖色灯光，镜头平稳推进，无文字，无logo",
+    "duration": 4,
+    "aspect_ratio": "16:9",
+    "async": true
+  }'
+```
+
 `ko3` 文生视频示例：
 
 ```bash
@@ -459,6 +475,22 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
     "duration": 8,
     "size": "720x1280",
     "image_url": "https://example.com/start.png"
+  }'
+```
+
+`sora2` image-to-video also accepts `aspect_ratio` and `async` compatibility fields:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/async-generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2",
+    "prompt": "让图片中的产品出现在一个高级广告视频里，镜头缓慢推进，光影自然，无文字，无logo",
+    "duration": 4,
+    "aspect_ratio": "16:9",
+    "async": true,
+    "image_url": "https://example.com/source-product.jpg"
   }'
 ```
 

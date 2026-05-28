@@ -149,6 +149,44 @@ func TestKlingO3AllowedDurationsSizesAndGuidance(t *testing.T) {
 	}
 }
 
+func TestVideoSizeForAspectRatio(t *testing.T) {
+	width, height, ok := videoSizeForAspectRatio("sora2", "16:9")
+	if !ok || width != 1280 || height != 720 {
+		t.Fatalf("sora2 16:9 = %dx%d, %v; want 1280x720, true", width, height, ok)
+	}
+	width, height, ok = videoSizeForAspectRatio("sora2", "9:16")
+	if !ok || width != 720 || height != 1280 {
+		t.Fatalf("sora2 9:16 = %dx%d, %v; want 720x1280, true", width, height, ok)
+	}
+	if _, _, ok := videoSizeForAspectRatio("sora2", "1:1"); ok {
+		t.Fatal("sora2 1:1 should not be allowed")
+	}
+	width, height, ok = videoSizeForAspectRatio("ko3", "16:9")
+	if !ok || width != 1920 || height != 1080 {
+		t.Fatalf("ko3 16:9 = %dx%d, %v; want 1920x1080, true", width, height, ok)
+	}
+	width, height, ok = videoSizeForAspectRatio("video-2.0-fast", "1:1")
+	if !ok || width != 960 || height != 960 {
+		t.Fatalf("video-2.0-fast 1:1 = %dx%d, %v; want 960x960, true", width, height, ok)
+	}
+}
+
+func TestVideoGenerationAsyncPathCompatibility(t *testing.T) {
+	const generationID = "gen-123"
+	if got := videoGenerationPollURL("/v1/video/generations", generationID); got != "/v1/video/generations/gen-123" {
+		t.Fatalf("poll url = %q", got)
+	}
+	if got := videoGenerationPollURL("/v1/video/async-generations", generationID); got != "/v1/video/async-generations/gen-123" {
+		t.Fatalf("async poll url = %q", got)
+	}
+	if got := videoGenerationIDFromPath("/v1/video/generations/gen-123"); got != generationID {
+		t.Fatalf("generation id = %q", got)
+	}
+	if got := videoGenerationIDFromPath("/v1/video/async-generations/gen-123"); got != generationID {
+		t.Fatalf("async generation id = %q", got)
+	}
+}
+
 func TestSora2UnsupportedGuidanceDetection(t *testing.T) {
 	if hasUnsupportedSora2GuidanceInput(map[string]interface{}{"prompt": "text only"}) {
 		t.Fatal("text-only request should not have unsupported guidance input")
