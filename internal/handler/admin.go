@@ -3661,6 +3661,8 @@ func requiredCreditsForVideoRequest(modelID string, videoReferenceMode bool) (fl
 		canonicalModelID = strings.TrimSpace(modelID)
 	}
 	switch canonicalModelID {
+	case "sora-2":
+		return sora2RequiredCredits, true
 	case "seedance-2.0":
 		return video2RequiredCredits, true
 	case "seedance-2.0-fast":

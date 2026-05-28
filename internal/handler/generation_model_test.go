@@ -262,7 +262,8 @@ func TestRequiredCreditsForVideoModel(t *testing.T) {
 		{modelID: "seedance-2.0", want: video2RequiredCredits, ok: true},
 		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
-		{modelID: "sora2", want: 0, ok: false},
+		{modelID: "sora2", want: sora2RequiredCredits, ok: true},
+		{modelID: "sora-2", want: sora2RequiredCredits, ok: true},
 		{modelID: "ko3", want: klingO3RequiredCredits, ok: true},
 		{modelID: "kling-o3", want: klingO3RequiredCredits, ok: true},
 	}

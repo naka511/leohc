@@ -41,7 +41,7 @@
 
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
-`sora2` 会按 Leonardo Web 端上游格式映射为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。`sora-2` 会作为兼容旧调用格式映射到 `sora2`。
+`sora2` 会按 Leonardo Web 端上游格式映射为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片，调度时要求 token 至少有 `1200` 积分。`sora-2` 会作为兼容旧调用格式映射到 `sora2`。
 `ko3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
 
 `video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：

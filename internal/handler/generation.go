@@ -68,11 +68,12 @@ const (
 	defaultKlingO3VideoDuration    = 3
 	defaultKlingO3VideoRefDuration = 5
 	tokenPreparationLeaseTTL       = 5 * time.Minute
+	sora2RequiredCredits           = 1200
 	video2RequiredCredits          = 4550
 	video2FastRequiredCredits      = 3650
 	klingO3RequiredCredits         = 4200
 	klingO3VideoRefRequiredCredits = 3400
-	minVideoRequiredCredits        = klingO3VideoRefRequiredCredits
+	minVideoRequiredCredits        = sora2RequiredCredits
 )
 
 // Server holds all dependencies for HTTP handlers.
