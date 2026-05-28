@@ -749,7 +749,7 @@ func normalizeVideoModelID(modelID string) (string, bool) {
 	case "video-2.0-fast", "seedance-2.0-fast":
 		return "seedance-2.0-fast", true
 	case "sora-2", "sora2":
-		return "sora2", true
+		return "sora-2", true
 	case "ko3", "kling-o3", "kling-video-o-3":
 		return "kling-video-o-3", true
 	default:

@@ -856,8 +856,8 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
-	if strings.EqualFold(genReq.Model, "sora-2") {
-		genReq.Model = "sora2"
+	if strings.EqualFold(genReq.Model, "sora2") {
+		genReq.Model = "sora-2"
 	}
 	if strings.EqualFold(genReq.Model, "kling-o3") || strings.EqualFold(genReq.Model, "ko3") {
 		genReq.Model = "kling-video-o-3"

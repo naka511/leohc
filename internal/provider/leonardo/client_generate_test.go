@@ -65,8 +65,8 @@ func TestGenerateBuildsSora2TextToVideoPayload(t *testing.T) {
 		t.Fatalf("operationName = %v, want Generate", payload["operationName"])
 	}
 	request := payload["variables"].(map[string]interface{})["request"].(map[string]interface{})
-	if request["model"] != "sora2" {
-		t.Fatalf("model = %v, want sora2", request["model"])
+	if request["model"] != "sora-2" {
+		t.Fatalf("model = %v, want sora-2", request["model"])
 	}
 	if request["public"] != true {
 		t.Fatalf("public = %v, want true", request["public"])
