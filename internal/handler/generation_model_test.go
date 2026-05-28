@@ -6,18 +6,18 @@ import (
 )
 
 func TestNormalizeVideoModelIDSupportsSora2(t *testing.T) {
-	modelID, ok := normalizeVideoModelID("sora-2")
+	modelID, ok := normalizeVideoModelID("sora2")
 	if !ok {
-		t.Fatal("normalizeVideoModelID did not accept sora-2")
+		t.Fatal("normalizeVideoModelID did not accept sora2")
 	}
 	if modelID != "sora2" {
 		t.Fatalf("modelID = %q, want sora2", modelID)
 	}
-	if publicVideoModelID(modelID) != "sora-2" {
-		t.Fatalf("publicVideoModelID(%q) = %q, want sora-2", modelID, publicVideoModelID(modelID))
+	if publicVideoModelID(modelID) != "sora2" {
+		t.Fatalf("publicVideoModelID(%q) = %q, want sora2", modelID, publicVideoModelID(modelID))
 	}
-	if aliasModelID, ok := normalizeVideoModelID("sora2"); !ok || aliasModelID != "sora2" {
-		t.Fatalf("normalizeVideoModelID(sora2) = %q, %v; want sora2, true", aliasModelID, ok)
+	if aliasModelID, ok := normalizeVideoModelID("sora-2"); !ok || aliasModelID != "sora2" {
+		t.Fatalf("normalizeVideoModelID(sora-2) = %q, %v; want sora2, true", aliasModelID, ok)
 	}
 }
 
@@ -38,12 +38,12 @@ func TestNormalizeVideoModelIDSupportsKlingO3(t *testing.T) {
 }
 
 func TestSora2DefaultsMatchTextToVideoCapture(t *testing.T) {
-	if got := defaultVideoDuration("sora-2"); got != 8 {
-		t.Fatalf("defaultVideoDuration(sora-2) = %d, want 8", got)
+	if got := defaultVideoDuration("sora2"); got != 8 {
+		t.Fatalf("defaultVideoDuration(sora2) = %d, want 8", got)
 	}
-	width, height := defaultVideoSize("sora-2")
+	width, height := defaultVideoSize("sora2")
 	if width != 720 || height != 1280 {
-		t.Fatalf("defaultVideoSize(sora-2) = %dx%d, want 720x1280", width, height)
+		t.Fatalf("defaultVideoSize(sora2) = %dx%d, want 720x1280", width, height)
 	}
 }
 
@@ -63,22 +63,22 @@ func TestKlingO3DefaultsMatchTextToVideoCapture(t *testing.T) {
 func TestSora2AllowedDurationsAndSizes(t *testing.T) {
 	for _, duration := range []int{4, 8, 12} {
 		if !isAllowedSora2Duration(duration) {
-			t.Fatalf("duration %d should be allowed for sora-2", duration)
+			t.Fatalf("duration %d should be allowed for sora2", duration)
 		}
 	}
 	for _, duration := range []int{5, 10, 15} {
 		if isAllowedSora2Duration(duration) {
-			t.Fatalf("duration %d should not be allowed for sora-2", duration)
+			t.Fatalf("duration %d should not be allowed for sora2", duration)
 		}
 	}
 	if !isAllowedSora2Size(720, 1280) {
-		t.Fatal("720x1280 should be allowed for sora-2")
+		t.Fatal("720x1280 should be allowed for sora2")
 	}
 	if !isAllowedSora2Size(1280, 720) {
-		t.Fatal("1280x720 should be allowed for sora-2")
+		t.Fatal("1280x720 should be allowed for sora2")
 	}
 	if isAllowedSora2Size(960, 960) {
-		t.Fatal("960x960 should not be allowed for sora-2")
+		t.Fatal("960x960 should not be allowed for sora2")
 	}
 }
 
@@ -224,7 +224,7 @@ func TestRequiredCreditsForVideoModel(t *testing.T) {
 		{modelID: "seedance-2.0", want: video2RequiredCredits, ok: true},
 		{modelID: "video-2.0-fast", want: video2FastRequiredCredits, ok: true},
 		{modelID: "seedance-2.0-fast", want: video2FastRequiredCredits, ok: true},
-		{modelID: "sora-2", want: 0, ok: false},
+		{modelID: "sora2", want: 0, ok: false},
 		{modelID: "ko3", want: klingO3RequiredCredits, ok: true},
 		{modelID: "kling-o3", want: klingO3RequiredCredits, ok: true},
 	}

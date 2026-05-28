@@ -910,13 +910,13 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	}
 	if isSora2Model(genReq.Model) {
 		if !isAllowedSora2Duration(genReq.Params.Duration) {
-			return nil, fmt.Errorf("sora-2 duration must be 4, 8, or 12 seconds")
+			return nil, fmt.Errorf("sora2 duration must be 4, 8, or 12 seconds")
 		}
 		if !isAllowedSora2Size(genReq.Params.Width, genReq.Params.Height) {
-			return nil, fmt.Errorf("sora-2 size must be 720x1280 or 1280x720")
+			return nil, fmt.Errorf("sora2 size must be 720x1280 or 1280x720")
 		}
 		if len(genReq.Params.StartFrame) > 1 {
-			return nil, fmt.Errorf("sora-2 supports at most one uploaded image")
+			return nil, fmt.Errorf("sora2 supports at most one uploaded image")
 		}
 	}
 	if isKlingO3Model(genReq.Model) {

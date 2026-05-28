@@ -40,7 +40,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		},
 	},
 	{
-		"id":          "sora-2",
+		"id":          "sora2",
 		"object":      "model",
 		"owned_by":    "leonardo",
 		"description": "Sora 2 video generation",
@@ -169,7 +169,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora2, or ko3", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -178,7 +178,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora2, or ko3", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -215,7 +215,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora-2, and ko3; seedance-2.0, seedance-2.0-fast, kling-o3, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora2, and ko3; seedance-2.0, seedance-2.0-fast, sora-2, kling-o3, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
@@ -228,7 +228,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		duration = int(d)
 	}
 	if isSora2ModelID(modelID) && !isAllowedSora2Duration(duration) {
-		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
 		return
 	}
 	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Duration(duration, klingO3VideoRefMode) {
@@ -273,15 +273,15 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
-		writeJSON(w, 400, errorResp("sora-2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
 		return
 	}
 	if isSora2ModelID(modelID) && !isAllowedSora2Size(width, height) {
-		writeJSON(w, 400, errorResp("sora-2 size must be 720x1280 or 1280x720", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 size must be 720x1280 or 1280x720", "invalid_request_error"))
 		return
 	}
 	if isSora2ModelID(modelID) && countSora2StartFrameInputs(data) > 1 {
-		writeJSON(w, 400, errorResp("sora-2 supports at most one uploaded image", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 supports at most one uploaded image", "invalid_request_error"))
 		return
 	}
 
@@ -756,7 +756,7 @@ func publicVideoModelID(modelID string) string {
 	case "seedance-2.0-fast", "video-2.0-fast":
 		return "video-2.0-fast"
 	case "sora2", "sora-2":
-		return "sora-2"
+		return "sora2"
 	case "kling-video-o-3", "kling-o3", "ko3":
 		return "ko3"
 	default:

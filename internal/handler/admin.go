@@ -2174,7 +2174,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if isSora2ModelID(modelID) && (len(body.ImageGuidance) > 0 || len(body.EndFrame) > 0 || len(body.VideoReference) > 0) {
-		writeJSON(w, 400, map[string]string{"detail": "sora-2 currently supports text-to-video and start-frame image-to-video requests only"})
+		writeJSON(w, 400, map[string]string{"detail": "sora2 currently supports text-to-video and start-frame image-to-video requests only"})
 		return
 	}
 	if isSora2ModelID(modelID) {
@@ -2182,7 +2182,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			body.Duration = defaultSora2VideoDuration
 		}
 		if !isAllowedSora2Duration(body.Duration) {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 duration must be 4, 8, or 12 seconds"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 duration must be 4, 8, or 12 seconds"})
 			return
 		}
 		defaultWidth, defaultHeight := defaultVideoSize(modelID)
@@ -2193,11 +2193,11 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			body.Height = defaultHeight
 		}
 		if !isAllowedSora2Size(body.Width, body.Height) {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 size must be 720x1280 or 1280x720"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 size must be 720x1280 or 1280x720"})
 			return
 		}
 		if len(body.StartFrame) > 1 {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 supports at most one uploaded image"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 supports at most one uploaded image"})
 			return
 		}
 	}
