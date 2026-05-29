@@ -73,7 +73,10 @@ const (
 	video2FastRequiredCredits      = 3650
 	klingO3RequiredCredits         = 4200
 	klingO3VideoRefRequiredCredits = 3400
-	minVideoRequiredCredits        = sora2RequiredCredits
+	defaultTokenMaxRunningTasks    = 2
+	sora2TokenMaxRunningTasks      = 5
+	videoKo3ExhaustionCredits      = klingO3VideoRefRequiredCredits
+	sora2ExhaustionCredits         = sora2RequiredCredits
 )
 
 // Server holds all dependencies for HTTP handlers.

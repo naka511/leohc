@@ -287,6 +287,14 @@
 
             <div class="form-group">
               <label class="checkbox-label" style="user-select: none;">
+                <input type="checkbox" id="confSora2DedicatedModeEnabled" />
+                启用 sora2 专用模式
+              </label>
+              <p class="help">关闭时为默认 video+ko3 模式：单 Token 最多 2 个运行中任务，低于 3400 积分标记额度耗尽。开启后：单 Token 最多 5 个运行中任务，低于 1200 积分标记额度耗尽。</p>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label" style="user-select: none;">
                 <input type="checkbox" id="confExhaustedTokenAutoCleanupEnabled" />
                 启用额度耗尽 Token 自动清理
               </label>
@@ -569,6 +577,6 @@
 
   <div id="appToast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/static/admin.js?v=20260529-1"></script>
+  <script src="/static/admin.js?v=20260529-2"></script>
 </body>
 </html>

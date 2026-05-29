@@ -1118,6 +1118,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   let confAutoRefreshSweepIntervalMinutes = null;
   let confAutoRefreshMaxConcurrency = null;
+  const confSora2DedicatedModeEnabled = document.getElementById("confSora2DedicatedModeEnabled");
   const confExhaustedTokenAutoCleanupEnabled = document.getElementById("confExhaustedTokenAutoCleanupEnabled");
   const confExhaustedTokenAutoCleanupIntervalHours = document.getElementById("confExhaustedTokenAutoCleanupIntervalHours");
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
@@ -1325,6 +1326,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confAutoRefreshMaxConcurrency) {
           confAutoRefreshMaxConcurrency.value = Math.max(1, Math.min(50, Number(data.auto_refresh_max_concurrency || 5)));
         }
+        if (confSora2DedicatedModeEnabled) {
+          confSora2DedicatedModeEnabled.checked = Boolean(data.sora2_dedicated_mode_enabled || false);
+        }
         if (confExhaustedTokenAutoCleanupEnabled) {
           confExhaustedTokenAutoCleanupEnabled.checked = Boolean(data.exhausted_token_auto_cleanup_enabled || false);
         }
@@ -1394,6 +1398,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 10),
         auto_refresh_sweep_interval_minutes: Number(confAutoRefreshSweepIntervalMinutes?.value || 1),
         auto_refresh_max_concurrency: Math.max(1, Math.min(50, Number(confAutoRefreshMaxConcurrency?.value || 5))),
+        sora2_dedicated_mode_enabled: Boolean(confSora2DedicatedModeEnabled?.checked),
         exhausted_token_auto_cleanup_enabled: Boolean(confExhaustedTokenAutoCleanupEnabled?.checked),
         exhausted_token_auto_cleanup_interval_hours: Math.max(1, Math.min(8760, Number(confExhaustedTokenAutoCleanupIntervalHours?.value || 24))),
         jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
