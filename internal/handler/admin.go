@@ -888,6 +888,7 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		all["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(all["leonardo_upload_proxy_mode"]))
 		all["leonardo_upload_proxy"] = strings.TrimSpace(toString(all["leonardo_upload_proxy"]))
 		all["auto_refresh_max_concurrency"] = normalizeConfigInt(all["auto_refresh_max_concurrency"], 5, 1, 50)
+		all["sora2_dedicated_mode_enabled"] = toBool(all["sora2_dedicated_mode_enabled"])
 		all["exhausted_token_auto_cleanup_enabled"] = toBool(all["exhausted_token_auto_cleanup_enabled"])
 		all["exhausted_token_auto_cleanup_interval_hours"] = normalizeConfigInt(all["exhausted_token_auto_cleanup_interval_hours"], 24, 1, 8760)
 		all["request_log_retention_limit"] = normalizeConfigInt(all["request_log_retention_limit"], 5000, 100, 100000)
@@ -917,6 +918,7 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	updates["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(updates["leonardo_upload_proxy_mode"]))
 	updates["leonardo_upload_proxy"] = strings.TrimSpace(toString(updates["leonardo_upload_proxy"]))
 	updates["auto_refresh_max_concurrency"] = normalizeConfigInt(updates["auto_refresh_max_concurrency"], 5, 1, 50)
+	updates["sora2_dedicated_mode_enabled"] = toBool(updates["sora2_dedicated_mode_enabled"])
 	updates["exhausted_token_auto_cleanup_enabled"] = toBool(updates["exhausted_token_auto_cleanup_enabled"])
 	updates["exhausted_token_auto_cleanup_interval_hours"] = normalizeConfigInt(updates["exhausted_token_auto_cleanup_interval_hours"], 24, 1, 8760)
 	updates["request_log_retention_limit"] = normalizeConfigInt(updates["request_log_retention_limit"], 5000, 100, 100000)
@@ -3347,7 +3349,21 @@ func (s *Server) tokenRunningGenerationCount(tokenID string) int {
 }
 
 func (s *Server) tokenCanAcceptMoreRunningTasks(tokenID string) bool {
-	return s.tokenRunningGenerationCount(tokenID) < 2
+	return s.tokenRunningGenerationCount(tokenID) < s.tokenMaxRunningTasks()
+}
+
+func (s *Server) sora2DedicatedModeEnabled() bool {
+	if s == nil || s.Config == nil {
+		return false
+	}
+	return s.Config.GetBool("sora2_dedicated_mode_enabled", false)
+}
+
+func (s *Server) tokenMaxRunningTasks() int {
+	if s.sora2DedicatedModeEnabled() {
+		return sora2TokenMaxRunningTasks
+	}
+	return defaultTokenMaxRunningTasks
 }
 
 func (s *Server) reserveTokenPreparation(tokenID string) bool {
@@ -3672,10 +3688,18 @@ func tokenCreditsAvailable(info map[string]interface{}) (float64, bool) {
 }
 
 func (s *Server) markTokenExhaustedIfBelowGenerationMinimum(tokenID string, credits float64, reason string) {
-	if strings.TrimSpace(tokenID) == "" || credits >= minVideoRequiredCredits {
+	threshold := s.tokenExhaustionCreditThreshold()
+	if strings.TrimSpace(tokenID) == "" || credits >= threshold {
 		return
 	}
-	s.markTokenExhausted(tokenID, fmt.Sprintf("%s: %.0f < %.0f", strings.TrimSpace(reason), credits, float64(minVideoRequiredCredits)))
+	s.markTokenExhausted(tokenID, fmt.Sprintf("%s: %.0f < %.0f", strings.TrimSpace(reason), credits, threshold))
+}
+
+func (s *Server) tokenExhaustionCreditThreshold() float64 {
+	if s.sora2DedicatedModeEnabled() {
+		return float64(sora2ExhaustionCredits)
+	}
+	return float64(videoKo3ExhaustionCredits)
 }
 
 func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID string, videoReferenceMode bool) bool {
@@ -3689,7 +3713,7 @@ func (s *Server) tokenCanRunModelByCredits(info map[string]interface{}, modelID 
 		return false
 	}
 	tokenID := strings.TrimSpace(toString(info["id"]))
-	if availableCredits < minVideoRequiredCredits {
+	if availableCredits < s.tokenExhaustionCreditThreshold() {
 		s.markTokenExhaustedIfBelowGenerationMinimum(tokenID, availableCredits, "remaining credits below video generation minimum")
 		return false
 	}
