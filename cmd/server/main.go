@@ -100,6 +100,7 @@ func main() {
 		ReqLog:         reqLogStore,
 	}
 	srv.StartTokenAutoRefreshLoop()
+	srv.StartExhaustedTokenCleanupLoop()
 
 	mux := http.NewServeMux()
 
@@ -109,6 +110,8 @@ func main() {
 	mux.HandleFunc("/v1/chat/completions", srv.HandleChatCompletions)
 	mux.HandleFunc("/v1/video/generations", srv.HandleVideoGeneration)
 	mux.HandleFunc("/v1/video/generations/", srv.HandleVideoGenerationStatus)
+	mux.HandleFunc("/v1/video/async-generations", srv.HandleVideoGeneration)
+	mux.HandleFunc("/v1/video/async-generations/", srv.HandleVideoGenerationStatus)
 	mux.HandleFunc("/health", srv.HandleHealth)
 
 	// ─── Admin auth ───

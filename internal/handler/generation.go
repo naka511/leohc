@@ -40,7 +40,7 @@ var openAIModelCatalog = []map[string]interface{}{
 		},
 	},
 	{
-		"id":          "sora-2",
+		"id":          "sora2",
 		"object":      "model",
 		"owned_by":    "leonardo",
 		"description": "Sora 2 video generation",
@@ -68,11 +68,12 @@ const (
 	defaultKlingO3VideoDuration    = 3
 	defaultKlingO3VideoRefDuration = 5
 	tokenPreparationLeaseTTL       = 5 * time.Minute
+	sora2RequiredCredits           = 1200
 	video2RequiredCredits          = 4550
 	video2FastRequiredCredits      = 3650
 	klingO3RequiredCredits         = 4200
 	klingO3VideoRefRequiredCredits = 3400
-	minVideoRequiredCredits        = klingO3VideoRefRequiredCredits
+	minVideoRequiredCredits        = sora2RequiredCredits
 )
 
 // Server holds all dependencies for HTTP handlers.
@@ -94,6 +95,9 @@ type Server struct {
 	autoRefreshBusy         map[string]bool
 	autoRefreshLoopStarted  bool
 	autoRefreshSweepRunning bool
+	tokenCleanupMu          sync.Mutex
+	tokenCleanupLoopStarted bool
+	tokenCleanupRunning     bool
 	tokenPrepLeaseMu        sync.Mutex
 	tokenPrepLeases         map[string]time.Time
 }
@@ -169,7 +173,7 @@ func (s *Server) HandleImageGeneration(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("image generation is not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora2, or ko3", "invalid_request_error"))
 }
 
 // HandleChatCompletions handles POST /v1/chat/completions.
@@ -178,7 +182,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora-2, or ko3", "invalid_request_error"))
+	writeJSON(w, 400, errorResp("chat completions are not supported by this deployment; use /v1/video/generations with model video-2.0, video-2.0-fast, sora2, or ko3", "invalid_request_error"))
 }
 
 // HandleVideoGeneration handles POST /v1/video/generations.
@@ -215,7 +219,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID, ok := normalizeVideoModelID(requestedModelID)
 	if !ok {
-		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora-2, and ko3; seedance-2.0, seedance-2.0-fast, kling-o3, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("unsupported model; available models are video-2.0, video-2.0-fast, sora2, and ko3; seedance-2.0, seedance-2.0-fast, sora-2, kling-o3, and kling-video-o-3 are also supported as aliases", "invalid_request_error"))
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
@@ -228,7 +232,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		duration = int(d)
 	}
 	if isSora2ModelID(modelID) && !isAllowedSora2Duration(duration) {
-		writeJSON(w, 400, errorResp("sora-2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 duration must be 4, 8, or 12 seconds", "invalid_request_error"))
 		return
 	}
 	if isKlingO3ModelID(modelID) && !isAllowedKlingO3Duration(duration, klingO3VideoRefMode) {
@@ -246,6 +250,14 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	width, height := defaultVideoSize(modelID)
 	if klingO3VideoRefMode {
 		width, height = 0, 0
+	}
+	if aspectRatio := strings.TrimSpace(toString(data["aspect_ratio"])); aspectRatio != "" {
+		aspectWidth, aspectHeight, ok := videoSizeForAspectRatio(modelID, aspectRatio)
+		if !ok {
+			writeJSON(w, 400, errorResp("unsupported aspect_ratio for model", "invalid_request_error"))
+			return
+		}
+		width, height = aspectWidth, aspectHeight
 	}
 	if size, ok := data["size"].(string); ok && size != "" {
 		parts := strings.Split(size, "x")
@@ -273,15 +285,15 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isSora2ModelID(modelID) && hasUnsupportedSora2GuidanceInput(data) {
-		writeJSON(w, 400, errorResp("sora-2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 currently supports text-to-video and start-frame image-to-video requests only", "invalid_request_error"))
 		return
 	}
 	if isSora2ModelID(modelID) && !isAllowedSora2Size(width, height) {
-		writeJSON(w, 400, errorResp("sora-2 size must be 720x1280 or 1280x720", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 size must be 720x1280 or 1280x720", "invalid_request_error"))
 		return
 	}
 	if isSora2ModelID(modelID) && countSora2StartFrameInputs(data) > 1 {
-		writeJSON(w, 400, errorResp("sora-2 supports at most one uploaded image", "invalid_request_error"))
+		writeJSON(w, 400, errorResp("sora2 supports at most one uploaded image", "invalid_request_error"))
 		return
 	}
 
@@ -353,7 +365,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 				"created":    submission.CreatedAt.Unix(),
 				"model":      responseModelID,
 				"status":     "in_progress",
-				"poll_url":   fmt.Sprintf("/v1/video/generations/%s", submission.GenerationID),
+				"poll_url":   videoGenerationPollURL(r.URL.Path, submission.GenerationID),
 				"request_id": submission.GenerationID,
 			})
 			return
@@ -416,7 +428,7 @@ func (s *Server) HandleVideoGenerationStatus(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 401, errorResp("invalid api key", "authentication_error"))
 		return
 	}
-	generationID := extractPathParam(r.URL.Path, "/v1/video/generations/")
+	generationID := videoGenerationIDFromPath(r.URL.Path)
 	if generationID == "" {
 		writeJSON(w, 400, errorResp("generation id is required", "invalid_request_error"))
 		return
@@ -740,7 +752,7 @@ func normalizeVideoModelID(modelID string) (string, bool) {
 		return "seedance-2.0", true
 	case "video-2.0-fast", "seedance-2.0-fast":
 		return "seedance-2.0-fast", true
-	case "sora-2":
+	case "sora-2", "sora2":
 		return "sora-2", true
 	case "ko3", "kling-o3", "kling-video-o-3":
 		return "kling-video-o-3", true
@@ -755,6 +767,8 @@ func publicVideoModelID(modelID string) string {
 		return "video-2.0"
 	case "seedance-2.0-fast", "video-2.0-fast":
 		return "video-2.0-fast"
+	case "sora2", "sora-2":
+		return "sora2"
 	case "kling-video-o-3", "kling-o3", "ko3":
 		return "ko3"
 	default:
@@ -763,7 +777,8 @@ func publicVideoModelID(modelID string) string {
 }
 
 func isSora2ModelID(modelID string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+	modelID = strings.TrimSpace(modelID)
+	return strings.EqualFold(modelID, "sora-2") || strings.EqualFold(modelID, "sora2")
 }
 
 func isKlingO3ModelID(modelID string) bool {
@@ -802,6 +817,47 @@ func defaultVideoSize(modelID string) (int, int) {
 		return 1080, 1920
 	}
 	return 1280, 720
+}
+
+func videoSizeForAspectRatio(modelID string, aspectRatio string) (int, int, bool) {
+	aspectRatio = strings.TrimSpace(aspectRatio)
+	switch aspectRatio {
+	case "16:9":
+		if isKlingO3ModelID(modelID) {
+			return 1920, 1080, true
+		}
+		return 1280, 720, true
+	case "9:16":
+		if isKlingO3ModelID(modelID) {
+			return 1080, 1920, true
+		}
+		return 720, 1280, true
+	case "1:1":
+		if isSora2ModelID(modelID) {
+			return 0, 0, false
+		}
+		if isKlingO3ModelID(modelID) {
+			return 1440, 1440, true
+		}
+		return 960, 960, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func videoGenerationPollURL(requestPath string, generationID string) string {
+	prefix := "/v1/video/generations"
+	if strings.HasPrefix(requestPath, "/v1/video/async-generations") {
+		prefix = "/v1/video/async-generations"
+	}
+	return fmt.Sprintf("%s/%s", prefix, generationID)
+}
+
+func videoGenerationIDFromPath(path string) string {
+	if id := extractPathParam(path, "/v1/video/generations/"); id != "" {
+		return id
+	}
+	return extractPathParam(path, "/v1/video/async-generations/")
 }
 
 func isAllowedSora2Duration(duration int) bool {

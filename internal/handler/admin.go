@@ -604,47 +604,20 @@ func (s *Server) HandleTokenCleanupStatus(w http.ResponseWriter, r *http.Request
 	}
 
 	status := strings.ToLower(strings.TrimSpace(body.Status))
-	if status != "invalid" && status != "exhausted" && status != "abnormal" {
+	if !isTokenCleanupStatus(status) {
 		writeJSON(w, 400, map[string]string{"detail": "status must be invalid, exhausted, or abnormal"})
 		return
 	}
 
-	now := float64(time.Now().Unix())
-	tokens := s.TokenMgr.ListFull()
-	ids := make([]string, 0, len(tokens))
-	for _, info := range tokens {
-		tokenID := strings.TrimSpace(toString(info["id"]))
-		if tokenID == "" {
-			continue
-		}
-		tokenStatus := strings.ToLower(strings.TrimSpace(toString(info["status"])))
-		expiresAt := toFloat64(info["expires_at"])
-
-		switch status {
-		case "invalid":
-			if tokenStatus == "invalid" || (expiresAt > 0 && now >= expiresAt) {
-				ids = append(ids, tokenID)
-			}
-		case "exhausted":
-			if tokenStatus == "exhausted" {
-				ids = append(ids, tokenID)
-			}
-		case "abnormal":
-			if tokenStatus == "abnormal" {
-				ids = append(ids, tokenID)
-			}
-		}
-	}
-
-	deletedIDs, failed := s.TokenMgr.RemoveMany(ids)
+	result := s.cleanupTokensByStatus(status)
 
 	writeJSON(w, 200, map[string]interface{}{
-		"ok":            failed == 0,
+		"ok":            result.FailedCount == 0,
 		"status":        status,
-		"matched_count": len(ids),
-		"deleted_count": len(deletedIDs),
-		"failed_count":  failed,
-		"deleted_ids":   deletedIDs,
+		"matched_count": result.MatchedCount,
+		"deleted_count": result.DeletedCount,
+		"failed_count":  result.FailedCount,
+		"deleted_ids":   result.DeletedIDs,
 	})
 }
 
@@ -915,6 +888,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 		all["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(all["leonardo_upload_proxy_mode"]))
 		all["leonardo_upload_proxy"] = strings.TrimSpace(toString(all["leonardo_upload_proxy"]))
 		all["auto_refresh_max_concurrency"] = normalizeConfigInt(all["auto_refresh_max_concurrency"], 5, 1, 50)
+		all["exhausted_token_auto_cleanup_enabled"] = toBool(all["exhausted_token_auto_cleanup_enabled"])
+		all["exhausted_token_auto_cleanup_interval_hours"] = normalizeConfigInt(all["exhausted_token_auto_cleanup_interval_hours"], 24, 1, 8760)
 		all["request_log_retention_limit"] = normalizeConfigInt(all["request_log_retention_limit"], 5000, 100, 100000)
 		// Mask sensitive values
 		if _, ok := all["admin_password"]; ok {
@@ -942,6 +917,8 @@ func (s *Server) HandleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	updates["leonardo_upload_proxy_mode"] = normalizeLeonardoUploadProxyMode(toString(updates["leonardo_upload_proxy_mode"]))
 	updates["leonardo_upload_proxy"] = strings.TrimSpace(toString(updates["leonardo_upload_proxy"]))
 	updates["auto_refresh_max_concurrency"] = normalizeConfigInt(updates["auto_refresh_max_concurrency"], 5, 1, 50)
+	updates["exhausted_token_auto_cleanup_enabled"] = toBool(updates["exhausted_token_auto_cleanup_enabled"])
+	updates["exhausted_token_auto_cleanup_interval_hours"] = normalizeConfigInt(updates["exhausted_token_auto_cleanup_interval_hours"], 24, 1, 8760)
 	updates["request_log_retention_limit"] = normalizeConfigInt(updates["request_log_retention_limit"], 5000, 100, 100000)
 	delete(updates, "generated_usage_mb")
 	delete(updates, "generated_usage_bytes")
@@ -2174,7 +2151,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if isSora2ModelID(modelID) && (len(body.ImageGuidance) > 0 || len(body.EndFrame) > 0 || len(body.VideoReference) > 0) {
-		writeJSON(w, 400, map[string]string{"detail": "sora-2 currently supports text-to-video and start-frame image-to-video requests only"})
+		writeJSON(w, 400, map[string]string{"detail": "sora2 currently supports text-to-video and start-frame image-to-video requests only"})
 		return
 	}
 	if isSora2ModelID(modelID) {
@@ -2182,7 +2159,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			body.Duration = defaultSora2VideoDuration
 		}
 		if !isAllowedSora2Duration(body.Duration) {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 duration must be 4, 8, or 12 seconds"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 duration must be 4, 8, or 12 seconds"})
 			return
 		}
 		defaultWidth, defaultHeight := defaultVideoSize(modelID)
@@ -2193,11 +2170,11 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			body.Height = defaultHeight
 		}
 		if !isAllowedSora2Size(body.Width, body.Height) {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 size must be 720x1280 or 1280x720"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 size must be 720x1280 or 1280x720"})
 			return
 		}
 		if len(body.StartFrame) > 1 {
-			writeJSON(w, 400, map[string]string{"detail": "sora-2 supports at most one uploaded image"})
+			writeJSON(w, 400, map[string]string{"detail": "sora2 supports at most one uploaded image"})
 			return
 		}
 	}
@@ -3661,6 +3638,8 @@ func requiredCreditsForVideoRequest(modelID string, videoReferenceMode bool) (fl
 		canonicalModelID = strings.TrimSpace(modelID)
 	}
 	switch canonicalModelID {
+	case "sora-2":
+		return sora2RequiredCredits, true
 	case "seedance-2.0":
 		return video2RequiredCredits, true
 	case "seedance-2.0-fast":

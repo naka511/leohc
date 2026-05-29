@@ -20,7 +20,7 @@
 
 - `video-2.0`
 - `video-2.0-fast`
-- `sora-2`
+- `sora2`
 - `ko3`
 
 兼容原模型名：`seedance-2.0` 会映射到 `video-2.0`，`seedance-2.0-fast` 会映射到 `video-2.0-fast`。
@@ -31,7 +31,8 @@
 | --- | --- | --- |
 | `video-2.0` | `seedance-2.0` | 推荐使用的新标准模型名 |
 | `video-2.0-fast` | `seedance-2.0-fast` | 推荐使用的新快速模型名 |
-| `sora-2` | `sora-2` | Sora 2 视频上游模型 |
+| `sora2` | `sora-2` | Sora 2 视频模型 |
+| `sora-2` | `sora2` | 兼容旧调用格式 |
 | `ko3` | `kling-video-o-3` | Kling O3 视频上游模型 |
 | `kling-o3` | `kling-video-o-3` | 兼容旧调用格式 |
 | `seedance-2.0` | `seedance-2.0` | 兼容旧调用格式 |
@@ -40,7 +41,7 @@
 
 下游请求建议优先使用 `video-2.0` 和 `video-2.0-fast`。服务内部会在调用 Leonardo 上游前自动转换为对应的 `seedance-*` 模型名，Token 成功次数统计和组合耗尽自动禁用也会按映射后的模型正确计入 `S` 或 `F`。
 
-`sora-2` 会按 Leonardo Web 端上游格式直接透传为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片。
+`sora2` 会按 Leonardo Web 端上游格式映射为 `sora-2`，默认 `duration=8`、`size=720x1280`，支持文生视频和 start-frame 图生视频参数。`sora2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒，最多上传一张图片，调度时要求 token 至少有 `1200` 积分。`sora-2` 会作为兼容旧调用格式映射到 `sora2`。
 `ko3` 会映射为 Leonardo 上游 `kling-video-o-3`，默认 `duration=3`、`size=1080x1920`、`mode=RESOLUTION_1080`、`motion_has_audio=true`，支持文生视频、`image_reference` 图生视频、首尾帧模式和参考视频生视频。显式配置支持 `1440x1440`、`1080x1920`、`1920x1080`，时长支持 `3-15` 秒；参考视频模式未传尺寸时默认 `size=0x0`。
 
 `video-2.0` 和 `video-2.0-fast` 当前统一按下面的口径调用：
@@ -205,8 +206,9 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 Async change:
 
 - `POST /v1/video/generations` now submits the job only.
+- `POST /v1/video/async-generations` is also accepted as a compatibility alias.
 - The submit endpoint returns `202 Accepted` with `generation_id`.
-- Clients must poll `GET /v1/video/generations/{generation_id}` until the job reaches `succeeded` or `failed`.
+- Clients must poll `GET /v1/video/generations/{generation_id}` or `GET /v1/video/async-generations/{generation_id}` until the job reaches `succeeded` or `failed`.
 
 Submit response example:
 
@@ -401,7 +403,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora-2` 文生视频示例：
+`sora2` 文生视频示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -409,9 +411,24 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "龟兔赛跑",
-    "model": "sora-2",
+    "model": "sora2",
     "duration": 8,
     "size": "720x1280"
+  }'
+```
+
+`sora2` also accepts `aspect_ratio` and `async` compatibility fields:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/async-generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2",
+    "prompt": "一个美食节目镜头，厨师把意大利面装盘，暖色灯光，镜头平稳推进，无文字，无logo",
+    "duration": 4,
+    "aspect_ratio": "16:9",
+    "async": true
   }'
 ```
 
@@ -446,7 +463,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora-2` 图生视频最多支持一张起始图，可使用 `image_url`：
+`sora2` 图生视频最多支持一张起始图，可使用 `image_url`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -454,10 +471,26 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "武侠视频",
-    "model": "sora-2",
+    "model": "sora2",
     "duration": 8,
     "size": "720x1280",
     "image_url": "https://example.com/start.png"
+  }'
+```
+
+`sora2` image-to-video also accepts `aspect_ratio` and `async` compatibility fields:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/async-generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora2",
+    "prompt": "让图片中的产品出现在一个高级广告视频里，镜头缓慢推进，光影自然，无文字，无logo",
+    "duration": 4,
+    "aspect_ratio": "16:9",
+    "async": true,
+    "image_url": "https://example.com/source-product.jpg"
   }'
 ```
 
@@ -578,7 +611,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora-2` 也可以显式使用 `start_frame`：
+`sora2` 也可以显式使用 `start_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -586,7 +619,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "武侠视频",
-    "model": "sora-2",
+    "model": "sora2",
     "duration": 12,
     "size": "1280x720",
     "start_frame": [
@@ -597,7 +630,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora-2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒。
+`sora2` 仅支持 `720x1280`（9:16）和 `1280x720`（16:9），时长仅支持 `4`、`8`、`12` 秒。
 
 如果需要显式控制首帧和尾帧，也可以写成：
 
@@ -948,9 +981,15 @@ curl "http://127.0.0.1:8787/api/v1/leonardo/status?id=GENERATION_ID&token_id=YOU
   "generate_timeout": 300,
   "retry_enabled": true,
   "retry_max_attempts": 3,
-  "token_rotation_strategy": "round_robin"
+  "token_rotation_strategy": "round_robin",
+  "exhausted_token_auto_cleanup_enabled": false,
+  "exhausted_token_auto_cleanup_interval_hours": 24
 }
 ```
+
+`exhausted_token_auto_cleanup_enabled` 可在后台 `系统配置 -> 刷新与存储` 中开启。开启后后台会按
+`exhausted_token_auto_cleanup_interval_hours` 设置的小时数自动删除状态为 `exhausted`（额度耗尽）的 Token；
+例如填写 `1` 表示每 1 小时清理一次。
 
 ## 目录结构
 

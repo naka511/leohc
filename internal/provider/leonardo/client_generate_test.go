@@ -39,7 +39,7 @@ func TestGenerateBuildsSora2TextToVideoPayload(t *testing.T) {
 	}
 
 	result, err := client.Generate(session, &GenerateRequest{
-		Model:  "sora-2",
+		Model:  "sora2",
 		Public: true,
 		Params: GenerateParams{
 			Prompt:         "龟兔赛跑",
@@ -113,7 +113,7 @@ func TestGenerateBuildsSora2ImageToVideoPayload(t *testing.T) {
 	}
 
 	_, err := client.Generate(session, &GenerateRequest{
-		Model:  "sora-2",
+		Model:  "sora2",
 		Public: true,
 		Params: GenerateParams{
 			Prompt:   "武侠视频",
@@ -982,7 +982,7 @@ func TestGenerateRejectsUnsupportedSora2Options(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := client.Generate(session, &GenerateRequest{
-				Model:  "sora-2",
+				Model:  "sora2",
 				Public: true,
 				Params: tc.params,
 			})

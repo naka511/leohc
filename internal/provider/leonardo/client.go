@@ -758,7 +758,8 @@ func inferResolutionModeForModel(modelID string, width int, height int) string {
 }
 
 func isSora2Model(modelID string) bool {
-	return strings.EqualFold(strings.TrimSpace(modelID), "sora-2")
+	modelID = strings.TrimSpace(modelID)
+	return strings.EqualFold(modelID, "sora-2") || strings.EqualFold(modelID, "sora2")
 }
 
 func isKlingO3Model(modelID string) bool {
@@ -855,6 +856,9 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	if genReq.Model == "" {
 		genReq.Model = "seedance-2.0-fast"
 	}
+	if strings.EqualFold(genReq.Model, "sora2") {
+		genReq.Model = "sora-2"
+	}
 	if strings.EqualFold(genReq.Model, "kling-o3") || strings.EqualFold(genReq.Model, "ko3") {
 		genReq.Model = "kling-video-o-3"
 	}
@@ -906,13 +910,13 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	}
 	if isSora2Model(genReq.Model) {
 		if !isAllowedSora2Duration(genReq.Params.Duration) {
-			return nil, fmt.Errorf("sora-2 duration must be 4, 8, or 12 seconds")
+			return nil, fmt.Errorf("sora2 duration must be 4, 8, or 12 seconds")
 		}
 		if !isAllowedSora2Size(genReq.Params.Width, genReq.Params.Height) {
-			return nil, fmt.Errorf("sora-2 size must be 720x1280 or 1280x720")
+			return nil, fmt.Errorf("sora2 size must be 720x1280 or 1280x720")
 		}
 		if len(genReq.Params.StartFrame) > 1 {
-			return nil, fmt.Errorf("sora-2 supports at most one uploaded image")
+			return nil, fmt.Errorf("sora2 supports at most one uploaded image")
 		}
 	}
 	if isKlingO3Model(genReq.Model) {
