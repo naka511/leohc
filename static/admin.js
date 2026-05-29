@@ -1118,6 +1118,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confRefreshIntervalMinutes = document.getElementById("confRefreshIntervalMinutes");
   let confAutoRefreshSweepIntervalMinutes = null;
   let confAutoRefreshMaxConcurrency = null;
+  const confExhaustedTokenAutoCleanupEnabled = document.getElementById("confExhaustedTokenAutoCleanupEnabled");
+  const confExhaustedTokenAutoCleanupIntervalHours = document.getElementById("confExhaustedTokenAutoCleanupIntervalHours");
   const confJwtRefreshMarginMinutes = document.getElementById("confJwtRefreshMarginMinutes");
   const confBatchConcurrency = document.getElementById("confBatchConcurrency");
   const confGeneratedMaxSizeMb = document.getElementById("confGeneratedMaxSizeMb");
@@ -1323,6 +1325,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (confAutoRefreshMaxConcurrency) {
           confAutoRefreshMaxConcurrency.value = Math.max(1, Math.min(50, Number(data.auto_refresh_max_concurrency || 5)));
         }
+        if (confExhaustedTokenAutoCleanupEnabled) {
+          confExhaustedTokenAutoCleanupEnabled.checked = Boolean(data.exhausted_token_auto_cleanup_enabled || false);
+        }
+        if (confExhaustedTokenAutoCleanupIntervalHours) {
+          confExhaustedTokenAutoCleanupIntervalHours.value = Math.max(1, Math.min(8760, Number(data.exhausted_token_auto_cleanup_interval_hours || 24)));
+        }
         if (confJwtRefreshMarginMinutes) {
           confJwtRefreshMarginMinutes.value = Math.max(0, Math.min(60, Number(data.jwt_refresh_margin_minutes ?? 5)));
         }
@@ -1386,6 +1394,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         refresh_interval_minutes: Number(confRefreshIntervalMinutes.value || 10),
         auto_refresh_sweep_interval_minutes: Number(confAutoRefreshSweepIntervalMinutes?.value || 1),
         auto_refresh_max_concurrency: Math.max(1, Math.min(50, Number(confAutoRefreshMaxConcurrency?.value || 5))),
+        exhausted_token_auto_cleanup_enabled: Boolean(confExhaustedTokenAutoCleanupEnabled?.checked),
+        exhausted_token_auto_cleanup_interval_hours: Math.max(1, Math.min(8760, Number(confExhaustedTokenAutoCleanupIntervalHours?.value || 24))),
         jwt_refresh_margin_minutes: Math.max(0, Math.min(60, Number(confJwtRefreshMarginMinutes?.value ?? 5))),
         batch_concurrency: Math.max(1, Math.min(100, Number(confBatchConcurrency.value || 5))),
         request_log_retention_limit: Math.max(100, Math.min(100000, Number(confRequestLogRetentionLimit?.value || 5000))),
@@ -1411,6 +1421,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       if (!Number.isInteger(payload.auto_refresh_max_concurrency) || payload.auto_refresh_max_concurrency < 1 || payload.auto_refresh_max_concurrency > 50) {
         throw new Error("自动刷新最大并发数必须是 1-50 的整数");
+      }
+      if (!Number.isInteger(payload.exhausted_token_auto_cleanup_interval_hours) || payload.exhausted_token_auto_cleanup_interval_hours < 1 || payload.exhausted_token_auto_cleanup_interval_hours > 8760) {
+        throw new Error("额度耗尽 Token 自动清理间隔必须是 1-8760 的整数小时");
       }
       if (!Number.isInteger(payload.refresh_interval_minutes) || payload.refresh_interval_minutes < 1 || payload.refresh_interval_minutes > 1440) {
         throw new Error("自动刷新间隔必须是 1-1440 的整数分钟");

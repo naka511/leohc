@@ -100,6 +100,7 @@ func main() {
 		ReqLog:         reqLogStore,
 	}
 	srv.StartTokenAutoRefreshLoop()
+	srv.StartExhaustedTokenCleanupLoop()
 
 	mux := http.NewServeMux()
 

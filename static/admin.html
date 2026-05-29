@@ -286,6 +286,20 @@
             </div>
 
             <div class="form-group">
+              <label class="checkbox-label" style="user-select: none;">
+                <input type="checkbox" id="confExhaustedTokenAutoCleanupEnabled" />
+                启用额度耗尽 Token 自动清理
+              </label>
+              <p class="help">开启后，后台会按设定间隔自动删除状态为“额度耗尽”的 Token。</p>
+            </div>
+
+            <div class="form-group">
+              <label for="confExhaustedTokenAutoCleanupIntervalHours">额度耗尽 Token 自动清理间隔 (小时)</label>
+              <input type="number" id="confExhaustedTokenAutoCleanupIntervalHours" class="input-text" min="1" max="8760" step="1" placeholder="默认 24" />
+              <p class="help">范围 1-8760 小时。填写 1 表示每 1 小时自动清理一次。</p>
+            </div>
+
+            <div class="form-group">
               <label for="confBatchConcurrency">批量导入并发数</label>
               <input type="number" id="confBatchConcurrency" class="input-text" min="1" max="100" step="1" placeholder="默认 5" />
               <p class="help">用于批量导入 Cookie 时的自动刷新与账号信息查询。默认并行 5 个。</p>
@@ -555,6 +569,6 @@
 
   <div id="appToast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/static/admin.js?v=20260423-1"></script>
+  <script src="/static/admin.js?v=20260529-1"></script>
 </body>
 </html>

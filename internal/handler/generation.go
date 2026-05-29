@@ -95,6 +95,9 @@ type Server struct {
 	autoRefreshBusy         map[string]bool
 	autoRefreshLoopStarted  bool
 	autoRefreshSweepRunning bool
+	tokenCleanupMu          sync.Mutex
+	tokenCleanupLoopStarted bool
+	tokenCleanupRunning     bool
 	tokenPrepLeaseMu        sync.Mutex
 	tokenPrepLeases         map[string]time.Time
 }

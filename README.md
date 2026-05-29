@@ -981,9 +981,15 @@ curl "http://127.0.0.1:8787/api/v1/leonardo/status?id=GENERATION_ID&token_id=YOU
   "generate_timeout": 300,
   "retry_enabled": true,
   "retry_max_attempts": 3,
-  "token_rotation_strategy": "round_robin"
+  "token_rotation_strategy": "round_robin",
+  "exhausted_token_auto_cleanup_enabled": false,
+  "exhausted_token_auto_cleanup_interval_hours": 24
 }
 ```
+
+`exhausted_token_auto_cleanup_enabled` 可在后台 `系统配置 -> 刷新与存储` 中开启。开启后后台会按
+`exhausted_token_auto_cleanup_interval_hours` 设置的小时数自动删除状态为 `exhausted`（额度耗尽）的 Token；
+例如填写 `1` 表示每 1 小时清理一次。
 
 ## 目录结构
 
