@@ -63,10 +63,11 @@ type ImportedCookieResult struct {
 
 // Manager manages the token pool with thread-safe operations.
 type Manager struct {
-	mu      sync.Mutex
-	tokens  []*Token
-	store   store.TokenStore
-	rrIndex int // round-robin index
+	mu       sync.Mutex
+	tokens   []*Token
+	store    store.TokenStore
+	rrIndex  int // legacy round-robin index
+	rrNextID string
 }
 
 // NewManager creates a new token manager.
@@ -385,6 +386,85 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	}
 	chosen.LastUsedAt = now
 	return tokenToMap(chosen)
+}
+
+// AvailableTokensForPlatform returns available token candidates in selection
+// order without advancing the round-robin cursor.
+func (m *Manager) AvailableTokensForPlatform(platform, strategy string) []map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := currentTimestamp()
+	active := m.availableTokensForPlatformInRoundRobinOrderLocked(platform, now)
+	if len(active) == 0 {
+		return nil
+	}
+
+	if strings.EqualFold(strategy, "random") {
+		rand.Shuffle(len(active), func(i, j int) {
+			active[i], active[j] = active[j], active[i]
+		})
+	}
+
+	out := make([]map[string]interface{}, 0, len(active))
+	for _, t := range active {
+		out = append(out, tokenToMap(t))
+	}
+	return out
+}
+
+// CommitAvailableTokenForPlatform records the token that was actually selected
+// and advances round-robin to the token after it.
+func (m *Manager) CommitAvailableTokenForPlatform(platform, tokenID, strategy string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := currentTimestamp()
+	var platformTokens []*Token
+	for _, t := range m.tokens {
+		if t.Platform == platform {
+			platformTokens = append(platformTokens, t)
+		}
+	}
+	for i, t := range platformTokens {
+		if t.ID != tokenID {
+			continue
+		}
+		t.LastUsedAt = now
+		if !strings.EqualFold(strategy, "random") {
+			m.rrNextID = platformTokens[(i+1)%len(platformTokens)].ID
+		}
+		return
+	}
+}
+
+func (m *Manager) availableTokensForPlatformInRoundRobinOrderLocked(platform string, now float64) []*Token {
+	var platformTokens []*Token
+	for _, t := range m.tokens {
+		if t.Platform == platform {
+			platformTokens = append(platformTokens, t)
+		}
+	}
+	if len(platformTokens) == 0 {
+		return nil
+	}
+
+	start := 0
+	for i, t := range platformTokens {
+		if t.ID == m.rrNextID {
+			start = i
+			break
+		}
+	}
+
+	active := make([]*Token, 0, len(platformTokens))
+	for offset := 0; offset < len(platformTokens); offset++ {
+		t := platformTokens[(start+offset)%len(platformTokens)]
+		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+			active = append(active, t)
+		}
+	}
+	return active
 }
 
 func isTokenExpiredAt(t *Token, now float64) bool {

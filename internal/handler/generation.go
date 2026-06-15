@@ -88,6 +88,7 @@ type Server struct {
 	ReqLog                  *reqlog.Store
 	generatedStorageMu      sync.Mutex
 	cookieImportMu          sync.Mutex
+	tokenSelectionMu        sync.Mutex
 	cookieImportJobs        map[string]*cookieImportJob
 	tokenRefreshJobMu       sync.Mutex
 	tokenRefreshJobs        map[string]*tokenRefreshBatchJob

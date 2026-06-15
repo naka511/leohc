@@ -3442,31 +3442,20 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		return session, usedTokenID, func() { s.releaseTokenPreparation(usedTokenID) }
 	}
 
+	s.tokenSelectionMu.Lock()
+	defer s.tokenSelectionMu.Unlock()
+
 	strategy := "round_robin"
 	if s.Config != nil {
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	maxAttempts := s.TokenMgr.Count()
-	if maxAttempts < 1 {
-		return nil, "", release
-	}
-	if strings.EqualFold(strategy, "random") {
-		maxAttempts *= 2
-	}
-
-	tried := make(map[string]bool)
-	for i := 0; i < maxAttempts; i++ {
-		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
-		if info == nil {
-			return nil, "", release
-		}
-
+	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
-		if foundID == "" || tried[foundID] || (excluded != nil && excluded[foundID]) {
+		if foundID == "" || (excluded != nil && excluded[foundID]) {
 			continue
 		}
-		tried[foundID] = true
 		if s.tokenHasPreparationLease(foundID) || !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
@@ -3492,6 +3481,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 			s.releaseTokenPreparation(foundID)
 			continue
 		}
+		s.TokenMgr.CommitAvailableTokenForPlatform("leonardo", foundID, strategy)
 		leasedTokenID := foundID
 		return session, leasedTokenID, func() { s.releaseTokenPreparation(leasedTokenID) }
 	}
@@ -3509,31 +3499,20 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		return s.getLeonardoSessionForModel(tokenID, modelID, false)
 	}
 
+	s.tokenSelectionMu.Lock()
+	defer s.tokenSelectionMu.Unlock()
+
 	strategy := "round_robin"
 	if s.Config != nil {
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	maxAttempts := s.TokenMgr.Count()
-	if maxAttempts < 1 {
-		return nil, ""
-	}
-	if strings.EqualFold(strategy, "random") {
-		maxAttempts *= 2
-	}
-
-	tried := make(map[string]bool)
-	for i := 0; i < maxAttempts; i++ {
-		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
-		if info == nil {
-			return nil, ""
-		}
-
+	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
-		if foundID == "" || tried[foundID] || (excluded != nil && excluded[foundID]) {
+		if foundID == "" || (excluded != nil && excluded[foundID]) {
 			continue
 		}
-		tried[foundID] = true
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
@@ -3553,6 +3532,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
 			continue
 		}
+		s.TokenMgr.CommitAvailableTokenForPlatform("leonardo", foundID, strategy)
 		return session, foundID
 	}
 	return nil, ""
@@ -3594,32 +3574,21 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		return session, tokenID
 	}
 
+	s.tokenSelectionMu.Lock()
+	defer s.tokenSelectionMu.Unlock()
+
 	// Otherwise select an available Leonardo token using the configured rotation strategy.
 	strategy := "round_robin"
 	if s.Config != nil {
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	maxAttempts := s.TokenMgr.Count()
-	if maxAttempts < 1 {
-		return nil, ""
-	}
-	if strings.EqualFold(strategy, "random") {
-		maxAttempts *= 2
-	}
-
-	tried := make(map[string]bool)
-	for i := 0; i < maxAttempts; i++ {
-		info := s.TokenMgr.GetAvailableTokenForPlatform("leonardo", strategy)
-		if info == nil {
-			return nil, ""
-		}
-
+	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
-		if foundID == "" || tried[foundID] {
+		if foundID == "" {
 			continue
 		}
-		tried[foundID] = true
 		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
 			continue
 		}
@@ -3639,6 +3608,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
 			continue
 		}
+		s.TokenMgr.CommitAvailableTokenForPlatform("leonardo", foundID, strategy)
 		return session, foundID
 	}
 	return nil, ""
