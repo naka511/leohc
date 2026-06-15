@@ -103,3 +103,48 @@ func TestUpsertImportedCookiesKeepsActiveDuplicateActive(t *testing.T) {
 		t.Fatalf("expected active duplicate to remain active, got %v", got)
 	}
 }
+
+func TestRoundRobinCandidatesAdvanceOnlyAfterCommit(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&memoryTokenStore{})
+	for _, value := range []string{"token-a", "token-b", "token-c"} {
+		if _, _, err := m.Add(value, "leonardo", "session_token", "", "", ""); err != nil {
+			t.Fatalf("add %s: %v", value, err)
+		}
+	}
+
+	candidates := m.AvailableTokensForPlatform("leonardo", "round_robin")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-a") {
+		t.Fatalf("first candidate = %v, want token-a", got)
+	}
+
+	// Simulate token-a being skipped by the scheduler and token-b being used.
+	m.CommitAvailableTokenForPlatform("leonardo", GenerateTokenID("token-b"), "round_robin")
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-c") {
+		t.Fatalf("first candidate after committing token-b = %v, want token-c", got)
+	}
+
+	// Merely reading/skipping candidates must not move the cursor.
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-c") {
+		t.Fatalf("first candidate moved without commit: %v", got)
+	}
+
+	if err := m.SetStatus(GenerateTokenID("token-c"), "disabled"); err != nil {
+		t.Fatalf("disable token-c: %v", err)
+	}
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-a") {
+		t.Fatalf("first candidate with token-c disabled = %v, want token-a", got)
+	}
+
+	if err := m.SetStatus(GenerateTokenID("token-c"), "active"); err != nil {
+		t.Fatalf("enable token-c: %v", err)
+	}
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-c") {
+		t.Fatalf("first candidate after token-c recovery = %v, want token-c", got)
+	}
+}
