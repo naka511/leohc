@@ -50,6 +50,8 @@
 - 默认分辨率：`720p`
 - 对应 `size` 示例：`720x1280`、`1280x720`、`960x960`
 - 支持时长：`4-15` 秒
+- 支持音频参考：`audio_url`、`audio_reference`，仅适用于 `video-2.0` 和 `video-2.0-fast`
+- 音频上传会按 Leonardo Web 端流程调用 `UploadImage(uploadType=INIT, extension=MP3, originalFilename=...)`，上传到 S3 后等待 `uploaded_media.status = COMPLETE`，再作为 `guidances.audio_reference` 传给上游
 
 ## 快速开始
 
@@ -287,7 +289,9 @@ Failed poll response example:
 - 带视频参考时，服务会按上游 Web 抓包默认发送 `width=0`、`height=0`、`duration=5`
 - 带视频参考的模式要求 token 剩余积分不少于 `3400`
 - 所有请求都需要传 `prompt`
-- 远程图片优先使用 `image_url` / `image_urls` / `start_image_url` / `end_image_url`
+- 对 `video-2.0`、`video-2.0-fast`、`ko3`，远程参考图片优先使用 `image_url` / `image_urls`，服务会统一转成 `guidances.image_reference`
+- 只有明确传 `start_image_url` / `start_frame` 时，才会按首帧处理；`end_image_url` / `end_frame` 用于尾帧
+- `sora2` 保持兼容旧写法：`image_url` 仍按起始图处理，也可以显式使用 `start_image_url` / `start_frame`
 - 远程视频优先使用 `video_url`
 
 推荐字段：
@@ -446,9 +450,9 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-### 2.2 单图生成视频（图生视频）
+### 2.2 单图参考生成视频（图生视频）
 
-最简单的写法是传 `image_url`。服务会自动把远程图片上传到 Leonardo，再作为首帧参考：
+最简单的写法是传 `image_url`。对 `video-2.0`、`video-2.0-fast`、`ko3`，服务会自动把远程图片上传到 Leonardo，再作为 `guidances.image_reference` 图片参考。`image_url` 不会被隐式当作首帧；如果需要首帧，请显式传 `start_image_url` 或 `start_frame`。
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -463,7 +467,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora2` 图生视频最多支持一张起始图，可使用 `image_url`：
+`sora2` 保持兼容旧写法，`image_url` 仍会作为起始图；也可以显式使用 `start_image_url` 或 `start_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -874,9 +878,90 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 }
 ```
 
-当请求里存在视频参考时，`image_url` 会自动按图片参考处理，而不是按单图首帧处理。
+对 `video-2.0`、`video-2.0-fast`、`ko3`，`image_url` 和 `image_urls` 始终按图片参考处理，会被转成 `guidances.image_reference`；只有明确传 `start_image_url` / `start_frame` 才会按首帧处理。`sora2` 的 `image_url` 仍保持起始图兼容语义。
 
-### 2.6 支持的扩展字段
+### 2.6 图片 + 音频参考生成视频
+
+`video-2.0` 和 `video-2.0-fast` 支持音频参考。最简单的写法是同时传 `image_url` 和 `audio_url`：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/video/generations \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "可爱的兔子在玩耍，背景音乐是@音频1",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "size": "720x1280",
+    "image_url": "https://example.com/rabbit.png",
+    "audio_url": "https://example.com/0617.MP3"
+  }'
+```
+
+服务会自动下载图片和音频，分别上传到 Leonardo，并在上游请求中组装为 `guidances.image_reference` 和 `guidances.audio_reference`。
+
+如果你已经有 Leonardo 侧上传好的音频 ID，可以直接传 `audio_reference`：
+
+```json
+{
+  "prompt": "可爱的兔子在玩耍，背景音乐是@音频1",
+  "model": "video-2.0-fast",
+  "duration": 4,
+  "size": "720x1280",
+  "image_guidance": [
+    {
+      "id": "4132aceb-98b6-47b8-856e-12f95871bad0",
+      "type": "UPLOADED",
+      "strength": "MID"
+    }
+  ],
+  "audio_reference": [
+    {
+      "id": "9be72770-3a31-4791-84bb-5047fc0d1fa9",
+      "type": "UPLOADED",
+      "duration": 14.915917
+    }
+  ]
+}
+```
+
+也兼容 Leonardo Web 端原始 `guidances.audio_reference` 结构：
+
+```json
+{
+  "prompt": "可爱的兔子在玩耍，背景音乐是@音频1",
+  "model": "video-2.0-fast",
+  "duration": 4,
+  "size": "720x1280",
+  "image_guidance": [
+    {
+      "id": "4132aceb-98b6-47b8-856e-12f95871bad0",
+      "type": "UPLOADED",
+      "strength": "MID"
+    }
+  ],
+  "guidances": {
+    "audio_reference": [
+      {
+        "audio": {
+          "id": "9be72770-3a31-4791-84bb-5047fc0d1fa9",
+          "type": "UPLOADED",
+          "duration": 14.915917
+        }
+      }
+    ]
+  }
+}
+```
+
+音频说明：
+
+- 仅 `video-2.0` 和 `video-2.0-fast` 支持 `audio_url` / `audio_reference`
+- 远程音频支持 `mp3`、`wav`、`m4a`、`aac`、`ogg`、`webm`
+- `audio_reference[].duration` 表示参考音频本身的时长；如果使用 `audio_url` 或 `audio_reference[].url`，服务会等待上游 `uploaded_media` 完成后尽量读取时长
+- prompt 中可以按 Leonardo Web 端习惯写 `@音频1`，例如：`可爱的兔子在玩耍，背景音乐是@音频1`
+
+### 2.7 支持的扩展字段
 
 - `image_url`
 - `start_image_url`
@@ -887,6 +972,9 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 - `end_frame`
 - `video_url`
 - `video_reference`
+- `audio_url`
+- `audio_reference`
+- `guidances.audio_reference`
 
 ## Leonardo 高级接口
 
@@ -896,6 +984,25 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 curl -X POST http://127.0.0.1:8787/api/v1/leonardo/upload-image \
   -F "file=@/path/to/image.jpg" \
   -F "token_id=YOUR_TOKEN_ID"
+```
+
+### 上传参考音频
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/upload-audio \
+  -F "file=@/path/to/0617.MP3" \
+  -F "token_id=YOUR_TOKEN_ID"
+```
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "audio_id": "9be72770-3a31-4791-84bb-5047fc0d1fa9",
+  "type": "UPLOADED",
+  "duration": 14.915917
+}
 ```
 
 ### 提交生成任务
@@ -914,7 +1021,7 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
   }'
 ```
 
-高级接口里的图片/视频引导字段，既支持直接传 Leonardo `id`，也支持传远程 `url`。
+高级接口里的图片/视频/音频引导字段，既支持直接传 Leonardo `id`，也支持传远程 `url`。
 
 图片示例：
 
@@ -955,6 +1062,52 @@ curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
       }
     ]
   }'
+```
+
+图片 + 音频示例：
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/v1/leonardo/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token_id": "YOUR_TOKEN_ID",
+    "prompt": "可爱的兔子在玩耍，背景音乐是@音频1",
+    "model": "video-2.0-fast",
+    "duration": 4,
+    "width": 720,
+    "height": 1280,
+    "image_guidance": [
+      {
+        "url": "https://example.com/rabbit.png",
+        "strength": "MID"
+      }
+    ],
+    "audio_reference": [
+      {
+        "url": "https://example.com/0617.MP3"
+      }
+    ]
+  }'
+```
+
+如果已经通过 `/api/v1/leonardo/upload-audio` 拿到了音频 ID，也可以直接传：
+
+```json
+{
+  "token_id": "YOUR_TOKEN_ID",
+  "prompt": "可爱的兔子在玩耍，背景音乐是@音频1",
+  "model": "video-2.0-fast",
+  "duration": 4,
+  "width": 720,
+  "height": 1280,
+  "audio_reference": [
+    {
+      "id": "9be72770-3a31-4791-84bb-5047fc0d1fa9",
+      "type": "UPLOADED",
+      "duration": 14.915917
+    }
+  ]
+}
 ```
 
 ### 查询任务状态

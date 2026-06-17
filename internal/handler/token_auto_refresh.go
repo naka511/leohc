@@ -8,6 +8,7 @@ import (
 )
 
 const autoRefreshRetryCooldown = time.Minute
+const tokenRefreshFailureThreshold = 3
 
 // StartTokenAutoRefreshLoop starts the background Leonardo token refresh sweep.
 func (s *Server) StartTokenAutoRefreshLoop() {
@@ -180,7 +181,7 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 	}
 
 	status := strings.ToLower(strings.TrimSpace(toString(info["status"])))
-	if status == "disabled" || status == "exhausted" || status == "abnormal" {
+	if status == "disabled" || status == "exhausted" {
 		return
 	}
 
@@ -191,14 +192,11 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 
 	session, credits, err := s.validateLeonardoToken(tokenID, rawToken)
 	if err != nil {
-		if shouldMarkTokenAbnormalOnRefreshError(err) {
-			s.markTokenAbnormalAndDisableAutoRefresh(tokenID, err.Error())
-		} else if shouldMarkTokenInvalidOnRefreshError(err) {
-			if setErr := s.TokenMgr.SetStatus(tokenID, "invalid"); setErr != nil {
-				log.Printf("[token] auto-refresh failed to mark token invalid for %s: %v", tokenID, setErr)
-			}
-		}
+		result := s.recordLeonardoRefreshFailure(tokenID, err)
 		log.Printf("[token] auto-refresh failed for %s: %v", tokenID, err)
+		if result.finalStatus != "" {
+			log.Printf("[token] auto-refresh marked token %s as %s after %d same refresh failures: %s", tokenID, result.finalStatus, result.failCount, result.reason)
+		}
 		return
 	}
 	if session == nil {
@@ -283,6 +281,9 @@ func (s *Server) shouldRunTokenAutoRefresh(item map[string]interface{}, tokenID 
 	if last, ok := s.autoRefreshRun[tokenID]; ok && !last.IsZero() && now.Sub(last) < autoRefreshRetryCooldown {
 		return false
 	}
+	if errorUntil := toFloat64(item["error_until"]); errorUntil > 0 && now.Before(time.Unix(int64(errorUntil), 0)) {
+		return false
+	}
 	return true
 }
 
@@ -337,6 +338,72 @@ func shouldMarkTokenAbnormalOnRefreshError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "no jwt found in session response") ||
 		strings.Contains(msg, "body keys: [session user]")
+}
+
+type leonardoRefreshFailureResult struct {
+	reason      string
+	failCount   int
+	finalStatus string
+}
+
+func (s *Server) recordLeonardoRefreshFailure(tokenID string, err error) leonardoRefreshFailureResult {
+	result := leonardoRefreshFailureResult{reason: normalizeLeonardoRefreshFailureReason(err)}
+	if s == nil || s.TokenMgr == nil || strings.TrimSpace(tokenID) == "" {
+		return result
+	}
+	info := s.TokenMgr.ReportRefreshFailure(tokenID, result.reason)
+	result.failCount = int(toFloat64(info["refresh_fail_count"]))
+	if result.failCount < tokenRefreshFailureThreshold {
+		return result
+	}
+
+	finalStatus := "abnormal"
+	if shouldMarkTokenInvalidOnRefreshError(err) {
+		finalStatus = "invalid"
+	}
+	if setErr := s.TokenMgr.SetStatus(tokenID, finalStatus); setErr != nil {
+		log.Printf("[token] failed to mark token %s as %s: %v", tokenID, finalStatus, setErr)
+		return result
+	}
+	result.finalStatus = finalStatus
+	return result
+}
+
+func normalizeLeonardoRefreshFailureReason(err error) string {
+	if err == nil {
+		return "unknown refresh error"
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "no jwt found in session response"):
+		return "no JWT found"
+	case strings.Contains(msg, "body keys: [session user]"):
+		return "session response missing JWT"
+	case strings.Contains(msg, "returned 401"), strings.Contains(msg, "graphql returned 401"), strings.Contains(msg, "get-session returned 401"), strings.Contains(msg, "unauthorized"):
+		return "http 401 unauthorized"
+	case strings.Contains(msg, "returned 403"), strings.Contains(msg, "graphql returned 403"), strings.Contains(msg, "get-session returned 403"), strings.Contains(msg, "forbidden"):
+		return "http 403 forbidden"
+	case strings.Contains(msg, "rate limited"), strings.Contains(msg, "returned 429"), strings.Contains(msg, "(429)"):
+		return "rate limited"
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(msg, "eof"):
+		return "EOF"
+	case strings.Contains(msg, "connection"):
+		return "connection error"
+	case strings.Contains(msg, "proxy"):
+		return "proxy error"
+	case strings.Contains(msg, "tls"):
+		return "TLS error"
+	case strings.Contains(msg, "returned 500"), strings.Contains(msg, "returned 502"), strings.Contains(msg, "returned 503"), strings.Contains(msg, "returned 504"):
+		return "upstream 5xx"
+	default:
+		reason := strings.TrimSpace(err.Error())
+		if len(reason) > 160 {
+			reason = reason[:160]
+		}
+		return reason
+	}
 }
 
 func (s *Server) markTokenAbnormalAndDisableAutoRefresh(tokenID, reason string) {

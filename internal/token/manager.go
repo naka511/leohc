@@ -23,6 +23,9 @@ type Token struct {
 	TokenType          string  `json:"token_type"` // "session_token", "cookie", "api_key"
 	Status             string  `json:"status"`     // "active", "invalid", "exhausted", "disabled"
 	Fails              int     `json:"fails"`
+	RefreshFailCount   int     `json:"refresh_fail_count,omitempty"`
+	RefreshFailReason  string  `json:"refresh_fail_reason,omitempty"`
+	LastRefreshFailAt  float64 `json:"last_refresh_fail_at,omitempty"`
 	SuccessCount       int     `json:"success_count"`
 	TotalSuccessCount  int     `json:"total_success_count"`
 	SeedanceFastCount  int     `json:"seedance_fast_success_count,omitempty"`
@@ -182,6 +185,7 @@ func (m *Manager) Add(value, platform, tokenType, accountName, accountEmail, sou
 			t.Status = "active"
 			t.Fails = 0
 			t.ErrorUntil = 0
+			clearRefreshFailureLocked(t)
 			if accountName != "" {
 				t.AccountName = accountName
 			}
@@ -481,6 +485,7 @@ func (m *Manager) ReportSuccess(tokenValue string) map[string]interface{} {
 		return nil
 	}
 	t.Fails = 0
+	clearRefreshFailureLocked(t)
 	t.SuccessCount++
 	t.TotalSuccessCount++
 	t.ErrorUntil = 0
@@ -498,6 +503,7 @@ func (m *Manager) ReportSuccessWithAutoDisable(tokenValue string, autoDisableEna
 		return nil
 	}
 	t.Fails = 0
+	clearRefreshFailureLocked(t)
 	t.SuccessCount++
 	t.TotalSuccessCount++
 	t.ErrorUntil = 0
@@ -520,6 +526,7 @@ func (m *Manager) ReportModelSuccessWithAutoDisable(tokenIDOrValue, modelID stri
 		return nil
 	}
 	t.Fails = 0
+	clearRefreshFailureLocked(t)
 	t.SuccessCount++
 	t.TotalSuccessCount++
 	t.ErrorUntil = 0
@@ -592,6 +599,42 @@ func (m *Manager) ReportFail(tokenValue string) map[string]interface{} {
 	return tokenToMap(t)
 }
 
+// ReportRefreshFailure records a failed Leonardo token refresh. The counter
+// only increments when the normalized reason matches the previous failure.
+func (m *Manager) ReportRefreshFailure(tokenIDOrValue, reason string) map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	t := m.findByIDOrValue(tokenIDOrValue)
+	if t == nil {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unknown refresh error"
+	}
+	if strings.EqualFold(strings.TrimSpace(t.RefreshFailReason), reason) {
+		t.RefreshFailCount++
+	} else {
+		t.RefreshFailReason = reason
+		t.RefreshFailCount = 1
+	}
+	t.LastRefreshFailAt = currentTimestamp()
+	t.Fails = t.RefreshFailCount
+
+	delays := []int{60, 180, 600, 1800}
+	idx := t.RefreshFailCount - 1
+	if idx >= len(delays) {
+		idx = len(delays) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	t.ErrorUntil = float64(time.Now().Unix()) + float64(delays[idx])
+	m.save()
+	return tokenToMap(t)
+}
+
 // SetStatus sets a token's status.
 func (m *Manager) SetStatus(tokenID, status string) error {
 	m.mu.Lock()
@@ -603,6 +646,7 @@ func (m *Manager) SetStatus(tokenID, status string) error {
 			if status == "active" {
 				t.Fails = 0
 				t.ErrorUntil = 0
+				clearRefreshFailureLocked(t)
 			}
 			m.save()
 			return nil
@@ -718,6 +762,7 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 			t.Status = "active"
 			t.Fails = 0
 			t.ErrorUntil = 0
+			clearRefreshFailureLocked(t)
 			t.SuccessCount = 0
 			if accountName != "" {
 				t.AccountName = accountName
@@ -746,6 +791,7 @@ func (m *Manager) UpsertAutoRefreshed(value, accountName, accountEmail, userID, 
 			t.Status = "active"
 			t.Fails = 0
 			t.ErrorUntil = 0
+			clearRefreshFailureLocked(t)
 			t.SuccessCount = 0
 			if accountName != "" {
 				t.AccountName = accountName
@@ -855,6 +901,7 @@ func (m *Manager) upsertImportedCookieLocked(value, accountName, accountEmail, u
 			}
 			t.Fails = 0
 			t.ErrorUntil = 0
+			clearRefreshFailureLocked(t)
 			if accountName != "" {
 				t.AccountName = accountName
 			}
@@ -887,6 +934,7 @@ func (m *Manager) upsertImportedCookieLocked(value, accountName, accountEmail, u
 		t.Status = status
 		t.Fails = 0
 		t.ErrorUntil = 0
+		clearRefreshFailureLocked(t)
 		t.SuccessCount = 0
 		if accountName != "" {
 			t.AccountName = accountName
@@ -1042,6 +1090,9 @@ func tokenToSummary(t *Token) map[string]interface{} {
 		"token_type":                      t.TokenType,
 		"status":                          displayStatus,
 		"fails":                           t.Fails,
+		"refresh_fail_count":              t.RefreshFailCount,
+		"refresh_fail_reason":             t.RefreshFailReason,
+		"last_refresh_fail_at":            t.LastRefreshFailAt,
 		"success_count":                   t.SuccessCount,
 		"total_success_count":             t.TotalSuccessCount,
 		"seedance_fast_success_count":     t.SeedanceFastCount,
@@ -1072,6 +1123,15 @@ func tokenToSummary(t *Token) map[string]interface{} {
 		m["expires_at_text"] = expTime.Format("2006-01-02 15:04")
 	}
 	return m
+}
+
+func clearRefreshFailureLocked(t *Token) {
+	if t == nil {
+		return
+	}
+	t.RefreshFailCount = 0
+	t.RefreshFailReason = ""
+	t.LastRefreshFailAt = 0
 }
 
 func maskTokenValue(value string) string {

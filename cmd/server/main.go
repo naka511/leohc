@@ -192,6 +192,7 @@ func main() {
 	mux.HandleFunc("/api/v1/leonardo/generate", srv.HandleLeonardoGenerate)
 	mux.HandleFunc("/api/v1/leonardo/status", srv.HandleLeonardoStatus)
 	mux.HandleFunc("/api/v1/leonardo/upload-image", srv.HandleLeonardoUploadImage)
+	mux.HandleFunc("/api/v1/leonardo/upload-audio", srv.HandleLeonardoUploadAudio)
 
 	// ─── Static files (admin UI) ───
 	if info, statErr := os.Stat(staticDir); statErr == nil && info.IsDir() {
