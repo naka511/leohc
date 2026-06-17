@@ -203,9 +203,7 @@ func (s *Server) refreshLeonardoTokenByID(tokenID string) {
 		return
 	}
 
-	if err := s.TokenMgr.SetStatus(tokenID, "active"); err != nil {
-		log.Printf("[token] auto-refresh failed to set active for %s: %v", tokenID, err)
-	}
+	s.restoreTokenAfterSuccessfulRefresh(tokenID)
 	if err := s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email); err != nil {
 		log.Printf("[token] auto-refresh failed to update account info for %s: %v", tokenID, err)
 	}
@@ -417,6 +415,30 @@ func (s *Server) markTokenAbnormalAndDisableAutoRefresh(tokenID, reason string) 
 		log.Printf("[token] failed to disable auto-refresh for abnormal token %s: %v", tokenID, err)
 	}
 	log.Printf("[token] marked token abnormal and disabled auto-refresh for %s: %s", tokenID, reason)
+}
+
+func (s *Server) restoreTokenAfterSuccessfulRefresh(tokenID string) {
+	if s == nil || s.TokenMgr == nil {
+		return
+	}
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return
+	}
+	if err := s.TokenMgr.SetStatus(tokenID, "active"); err != nil {
+		log.Printf("[token] failed to restore active status after refresh for %s: %v", tokenID, err)
+		return
+	}
+	info := s.TokenMgr.GetByID(tokenID)
+	if strings.ToLower(strings.TrimSpace(toString(info["platform"]))) != "leonardo" {
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(toString(info["status"]))) == "exhausted" {
+		return
+	}
+	if err := s.TokenMgr.SetAutoRefresh(tokenID, true); err != nil {
+		log.Printf("[token] failed to restore auto-refresh after successful refresh for %s: %v", tokenID, err)
+	}
 }
 
 func toBool(v interface{}) bool {

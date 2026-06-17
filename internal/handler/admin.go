@@ -850,7 +850,7 @@ func (s *Server) HandleCheckInvalidTokensBatch(w http.ResponseWriter, r *http.Re
 			items = append(items, item)
 			continue
 		}
-		s.TokenMgr.SetStatus(id, "active")
+		s.restoreTokenAfterSuccessfulRefresh(id)
 		if credits != nil {
 			s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 			item["credits"] = credits.TotalTokens
@@ -1192,7 +1192,7 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Update token info in the pool
-		s.TokenMgr.SetStatus(tokenID, "active")
+		s.restoreTokenAfterSuccessfulRefresh(tokenID)
 		if credits != nil {
 			s.TokenMgr.UpdateCredits(tokenID, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 		}
@@ -1775,7 +1775,7 @@ func (s *Server) runCookieImportJob(jobID string, inputs []cookieImportInput) {
 						}
 						s.cookieImportMu.Unlock()
 					} else {
-						_ = s.TokenMgr.SetStatus(tokenID, "active")
+						s.restoreTokenAfterSuccessfulRefresh(tokenID)
 						_ = s.TokenMgr.UpdateExpiry(tokenID, float64(session.JWTExpiry.Unix()))
 						_ = s.TokenMgr.UpdateAccountInfo(tokenID, session.HasuraUserID, session.Email)
 						tokenAccountEmail = strings.TrimSpace(session.Email)
@@ -2008,7 +2008,7 @@ func (s *Server) runTokenRefreshBatchJob(jobID string, ids []string) {
 					}
 					s.tokenRefreshJobMu.Unlock()
 				} else {
-					_ = s.TokenMgr.SetStatus(id, "active")
+					s.restoreTokenAfterSuccessfulRefresh(id)
 					if credits != nil {
 						_ = s.TokenMgr.UpdateCredits(id, float64(credits.TotalTokens), float64(credits.SubscriptionTokens+credits.PaidTokens+credits.RolloverTokens))
 						detail = fmt.Sprintf("刷新成功，剩余积分 %d", credits.TotalTokens)
