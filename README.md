@@ -289,7 +289,9 @@ Failed poll response example:
 - 带视频参考时，服务会按上游 Web 抓包默认发送 `width=0`、`height=0`、`duration=5`
 - 带视频参考的模式要求 token 剩余积分不少于 `3400`
 - 所有请求都需要传 `prompt`
-- 远程图片优先使用 `image_url` / `image_urls` / `start_image_url` / `end_image_url`
+- 对 `video-2.0`、`video-2.0-fast`、`ko3`，远程参考图片优先使用 `image_url` / `image_urls`，服务会统一转成 `guidances.image_reference`
+- 只有明确传 `start_image_url` / `start_frame` 时，才会按首帧处理；`end_image_url` / `end_frame` 用于尾帧
+- `sora2` 保持兼容旧写法：`image_url` 仍按起始图处理，也可以显式使用 `start_image_url` / `start_frame`
 - 远程视频优先使用 `video_url`
 
 推荐字段：
@@ -448,9 +450,9 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-### 2.2 单图生成视频（图生视频）
+### 2.2 单图参考生成视频（图生视频）
 
-最简单的写法是传 `image_url`。服务会自动把远程图片上传到 Leonardo，再作为首帧参考：
+最简单的写法是传 `image_url`。对 `video-2.0`、`video-2.0-fast`、`ko3`，服务会自动把远程图片上传到 Leonardo，再作为 `guidances.image_reference` 图片参考。`image_url` 不会被隐式当作首帧；如果需要首帧，请显式传 `start_image_url` 或 `start_frame`。
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -465,7 +467,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
   }'
 ```
 
-`sora2` 图生视频最多支持一张起始图，可使用 `image_url`：
+`sora2` 保持兼容旧写法，`image_url` 仍会作为起始图；也可以显式使用 `start_image_url` 或 `start_frame`：
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/video/generations \
@@ -876,7 +878,7 @@ curl -X POST http://127.0.0.1:8787/v1/video/generations \
 }
 ```
 
-当请求里存在视频参考时，`image_url` 会自动按图片参考处理，而不是按单图首帧处理。
+对 `video-2.0`、`video-2.0-fast`、`ko3`，`image_url` 和 `image_urls` 始终按图片参考处理，会被转成 `guidances.image_reference`；只有明确传 `start_image_url` / `start_frame` 才会按首帧处理。`sora2` 的 `image_url` 仍保持起始图兼容语义。
 
 ### 2.6 图片 + 音频参考生成视频
 
