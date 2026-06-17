@@ -318,6 +318,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     return `<span style="color:#a8bfd8;">剩余 ${rel}<br><span style="color:#7f96ad;">${token.expires_at_text || '-'}</span></span>`;
   }
 
+  function formatRefreshFailure(token) {
+    const count = Number(token?.refresh_fail_count || 0);
+    const reason = String(token?.refresh_fail_reason || "").trim();
+    if (!Number.isFinite(count) || count <= 0 || !reason) {
+      return "";
+    }
+    const status = String(token?.status || "").trim().toLowerCase();
+    const finalFailed = count >= 3 || status === "invalid" || status === "abnormal";
+    const prefix = finalFailed ? "连续失败" : "刷新失败";
+    const color = finalFailed ? "#ffb4bc" : "#ffca58";
+    return `<div style="margin-top:4px; font-size:11px; line-height:1.3; color:${color}; max-width:160px;" title="${escapeHtml(reason)}">${prefix} ${count}/3：${escapeHtml(reason)}</div>`;
+  }
+
   function formatCredits(token) {
     const available = Number(token?.credits_available);
     const err = String(token?.credits_error || "").trim();
@@ -384,6 +397,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const isStatusActive = t.status === "active";
       const isFrozen = t.status === "exhausted" || t.status === "invalid" || t.status === "abnormal";
       const displayStatus = STATUS_MAP[t.status.toLowerCase()] || t.status;
+      const refreshFailureStatus = formatRefreshFailure(t);
       const tokenAccountEmail = String(t.account_email || t.refresh_profile_email || "").trim();
       const accountEmailSafe = escapeHtml(tokenAccountEmail);
       const accountEmail = accountEmailSafe || '<span style="color:#7f96ad;">-</span>';
@@ -418,7 +432,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         <td><input type="checkbox" class="token-select" data-id="${tokenId}" ${selectedAttr} /></td>
         <td class="token-account-cell" title="添加时间: ${dateStr}">${accountEmail}</td>
         <td class="token-val">${tokenDisplay}</td>
-        <td><span class="status-badge ${statusClass}">${displayStatus}</span></td>
+        <td><span class="status-badge ${statusClass}">${displayStatus}</span>${refreshFailureStatus}</td>
         <td>${autoRefreshCell}</td>
         <td style="font-size:12px; line-height:1.35;">${formatCredits(t)}</td>
         <td>${formatTokenSuccessCounts(t)}</td>

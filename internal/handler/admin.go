@@ -815,28 +815,37 @@ func (s *Server) HandleCheckInvalidTokensBatch(w http.ResponseWriter, r *http.Re
 		session, credits, err := s.validateLeonardoToken(id, tokenValue)
 		if err != nil {
 			errMsg := err.Error()
+			failure := s.recordLeonardoRefreshFailure(id, err)
 			item["error"] = errMsg
-			switch {
-			case isInvalidLeonardoTokenError(err):
-				invalid++
-				if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "invalid" {
-					changed++
+			item["refresh_fail_count"] = failure.failCount
+			item["refresh_fail_reason"] = failure.reason
+			if failure.finalStatus != "" {
+				switch failure.finalStatus {
+				case "invalid":
+					invalid++
+					if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "invalid" {
+						changed++
+					}
+					item["status"] = "invalid"
+				default:
+					abnormal++
+					if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "abnormal" {
+						abnormalChanged++
+					}
+					item["status"] = "abnormal"
 				}
-				s.TokenMgr.SetStatus(id, "invalid")
-				item["status"] = "invalid"
-			case isAbnormalLeonardoTokenError(err):
-				abnormal++
-				if strings.ToLower(strings.TrimSpace(toString(info["status"]))) != "abnormal" {
-					abnormalChanged++
+			} else {
+				switch {
+				case isInvalidLeonardoTokenError(err):
+					failed++
+					item["status"] = "retrying_invalid"
+				case isAbnormalLeonardoTokenError(err):
+					failed++
+					item["status"] = "retrying_abnormal"
+				default:
+					failed++
+					item["status"] = "failed"
 				}
-				s.TokenMgr.SetStatus(id, "abnormal")
-				if s.TokenMgr.SetAutoRefresh(id, false) == nil {
-					disabledAutoRefresh++
-				}
-				item["status"] = "abnormal"
-			default:
-				failed++
-				item["status"] = "failed"
 			}
 			items = append(items, item)
 			continue
@@ -1172,12 +1181,13 @@ func (s *Server) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if platform == "leonardo" && s.LeonardoClient != nil {
 		session, credits, err := s.validateLeonardoToken(tokenID, tokenValue)
 		if err != nil {
-			abnormal := shouldMarkTokenAbnormalOnRefreshError(err)
-			if abnormal {
-				s.markTokenAbnormalAndDisableAutoRefresh(tokenID, err.Error())
-			}
+			failure := s.recordLeonardoRefreshFailure(tokenID, err)
 			writeJSON(w, statusForLeonardoRefreshError(err), map[string]interface{}{
-				"ok": false, "detail": "Token刷新失败: " + err.Error(),
+				"ok":                  false,
+				"detail":              "Token刷新失败: " + err.Error(),
+				"refresh_fail_count":  failure.failCount,
+				"refresh_fail_reason": failure.reason,
+				"final_status":        failure.finalStatus,
 			})
 			return
 		}
@@ -1752,16 +1762,16 @@ func (s *Server) runCookieImportJob(jobID string, inputs []cookieImportInput) {
 					if err != nil {
 						status = "failed"
 						detail = "已导入，但刷新失败: " + err.Error()
-						if strings.Contains(strings.ToLower(err.Error()), "invalid") ||
-							strings.Contains(strings.ToLower(err.Error()), "expired") {
-							_ = s.TokenMgr.SetStatus(tokenID, "invalid")
-						} else {
-							_ = s.TokenMgr.SetStatus(tokenID, "error")
+						failure := s.recordLeonardoRefreshFailure(tokenID, err)
+						if failure.finalStatus != "" {
+							status = failure.finalStatus
 						}
 						s.cookieImportMu.Lock()
 						job := s.cookieImportJobs[jobID]
 						if job != nil {
 							job.ErrorCount++
+							job.Items[idx]["refresh_fail_count"] = failure.failCount
+							job.Items[idx]["refresh_fail_reason"] = failure.reason
 						}
 						s.cookieImportMu.Unlock()
 					} else {
@@ -1982,14 +1992,19 @@ func (s *Server) runTokenRefreshBatchJob(jobID string, ids []string) {
 				if err != nil {
 					status = "failed"
 					detail = err.Error()
-					if shouldMarkTokenAbnormalOnRefreshError(err) {
-						status = "abnormal"
-						s.markTokenAbnormalAndDisableAutoRefresh(id, err.Error())
+					failure := s.recordLeonardoRefreshFailure(id, err)
+					if failure.finalStatus != "" {
+						status = failure.finalStatus
+					}
+					if failure.failCount > 0 {
+						detail = fmt.Sprintf("%s (refresh failed %d/%d: %s)", err.Error(), failure.failCount, tokenRefreshFailureThreshold, failure.reason)
 					}
 					s.tokenRefreshJobMu.Lock()
 					job := s.tokenRefreshJobs[jobID]
 					if job != nil {
 						job.FailedCount++
+						job.Items[idx]["refresh_fail_count"] = failure.failCount
+						job.Items[idx]["refresh_fail_reason"] = failure.reason
 					}
 					s.tokenRefreshJobMu.Unlock()
 				} else {
