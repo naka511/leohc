@@ -690,6 +690,13 @@ type VideoRef struct {
 	Duration float64 `json:"duration"` // video duration in seconds
 }
 
+// AudioRef is an audio reference for audio-guided generation.
+type AudioRef struct {
+	ID       string  `json:"id"`
+	Type     string  `json:"type"`     // "UPLOADED"
+	Duration float64 `json:"duration"` // audio duration in seconds
+}
+
 // GenerateRequest is the input for video generation.
 type GenerateRequest struct {
 	Model  string         `json:"model"`
@@ -712,6 +719,7 @@ type GenerateParams struct {
 	StartFrame     []FrameRef `json:"start_frame,omitempty"` // start frame (first frame)
 	EndFrame       []FrameRef `json:"end_frame,omitempty"`   // end frame (last frame)
 	VideoRefs      []VideoRef `json:"video_refs,omitempty"`  // video reference guidance
+	AudioRefs      []AudioRef `json:"audio_refs,omitempty"`  // audio reference guidance
 }
 
 // GenerateResponse is the response from the Generate mutation.
@@ -974,7 +982,7 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 	}
 
 	// Build guidances map (supports image_reference, start_frame, end_frame)
-	hasGuidances := len(genReq.Params.ImageRefs) > 0 || len(genReq.Params.StartFrame) > 0 || len(genReq.Params.EndFrame) > 0 || len(genReq.Params.VideoRefs) > 0
+	hasGuidances := len(genReq.Params.ImageRefs) > 0 || len(genReq.Params.StartFrame) > 0 || len(genReq.Params.EndFrame) > 0 || len(genReq.Params.VideoRefs) > 0 || len(genReq.Params.AudioRefs) > 0
 	if hasGuidances && isSora2Model(genReq.Model) {
 		if len(genReq.Params.StartFrame) > 0 {
 			var frames []map[string]interface{}
@@ -1079,6 +1087,29 @@ func (c *Client) Generate(session *TokenSession, genReq *GenerateRequest) (*Gene
 			}
 			guidances["video_reference_base"] = refs
 			log.Printf("[Leonardo] Including video_reference_base in generation")
+		}
+
+		// Audio reference guidance
+		if len(genReq.Params.AudioRefs) > 0 {
+			var refs []map[string]interface{}
+			for _, a := range genReq.Params.AudioRefs {
+				aType := a.Type
+				if aType == "" {
+					aType = "UPLOADED"
+				}
+				ref := map[string]interface{}{
+					"audio": map[string]interface{}{
+						"id":   a.ID,
+						"type": aType,
+					},
+				}
+				if a.Duration > 0 {
+					ref["audio"].(map[string]interface{})["duration"] = a.Duration
+				}
+				refs = append(refs, ref)
+			}
+			guidances["audio_reference"] = refs
+			log.Printf("[Leonardo] Including audio_reference in generation")
 		}
 
 		params["guidances"] = guidances
@@ -1893,6 +1924,11 @@ type UploadedMedia struct {
 // UploadInitImage initializes an image upload slot on Leonardo.
 // Returns the upload details including S3 presigned URL and fields.
 func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInitResult, error) {
+	return c.UploadInitMedia(session, ext, "")
+}
+
+// UploadInitMedia initializes a Leonardo staged upload slot.
+func (c *Client) UploadInitMedia(session *TokenSession, ext string, originalFilename string) (*UploadInitResult, error) {
 	if err := c.EnsureValidJWT(session); err != nil {
 		return nil, fmt.Errorf("ensure JWT: %w", err)
 	}
@@ -1904,14 +1940,18 @@ func (c *Client) UploadInitImage(session *TokenSession, ext string) (*UploadInit
 	if ext == "" {
 		ext = "jpg"
 	}
+	uploadInput := map[string]interface{}{
+		"uploadType": "INIT",
+		"extension":  ext,
+	}
+	if strings.TrimSpace(originalFilename) != "" {
+		uploadInput["originalFilename"] = strings.TrimSpace(originalFilename)
+	}
 
 	gqlReq := graphqlRequest{
 		OperationName: "UploadImage",
 		Variables: map[string]interface{}{
-			"uploadImageInput": map[string]interface{}{
-				"uploadType": "INIT",
-				"extension":  ext,
-			},
+			"uploadImageInput": uploadInput,
 		},
 		Query: uploadImageMutation,
 	}

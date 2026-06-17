@@ -2058,8 +2058,10 @@ var startTime = time.Now()
 const (
 	maxRemoteImageBytes     = 20 << 20
 	maxRemoteVideoBytes     = 100 << 20
+	maxRemoteAudioBytes     = 50 << 20
 	remoteImageFetchTimeout = 300 * time.Second
 	remoteVideoFetchTimeout = 500 * time.Second
+	remoteAudioFetchTimeout = 300 * time.Second
 	initImageLookupTimeout  = 500 * time.Second
 	remoteFetchMaxAttempts  = 3
 	remoteFetchRetryDelay   = 2 * time.Second
@@ -2134,6 +2136,12 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			Type     string  `json:"type"`
 			Duration float64 `json:"duration"`
 		} `json:"video_reference,omitempty"`
+		AudioReference []struct {
+			ID       string  `json:"id"`
+			URL      string  `json:"url"`
+			Type     string  `json:"type"`
+			Duration float64 `json:"duration"`
+		} `json:"audio_reference,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"detail": "invalid request body"})
@@ -2152,7 +2160,11 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, 400, map[string]string{"detail": "unsupported model"})
 		return
 	}
-	if isSora2ModelID(modelID) && (len(body.ImageGuidance) > 0 || len(body.EndFrame) > 0 || len(body.VideoReference) > 0) {
+	if len(body.AudioReference) > 0 && !isSeedanceModelID(modelID) {
+		writeJSON(w, 400, map[string]string{"detail": "audio_reference is only supported for video-2.0 and video-2.0-fast"})
+		return
+	}
+	if isSora2ModelID(modelID) && (len(body.ImageGuidance) > 0 || len(body.EndFrame) > 0 || len(body.VideoReference) > 0 || len(body.AudioReference) > 0) {
 		writeJSON(w, 400, map[string]string{"detail": "sora2 currently supports text-to-video and start-frame image-to-video requests only"})
 		return
 	}
@@ -2291,6 +2303,21 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 		videoRef.Type = refType
 		videoRefs = append(videoRefs, videoRef)
 	}
+	var audioRefs []leonardo.AudioRef
+	audioUploadCache := make(map[string]string)
+	for _, ar := range body.AudioReference {
+		audioRef, err := s.resolveLeonardoAudioRef(session, ar.ID, ar.URL, ar.Duration, audioUploadCache)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("invalid audio_reference entry: %v", err)})
+			return
+		}
+		refType := strings.TrimSpace(ar.Type)
+		if refType == "" || (strings.TrimSpace(ar.ID) == "" && strings.TrimSpace(ar.URL) != "") {
+			refType = "UPLOADED"
+		}
+		audioRef.Type = refType
+		audioRefs = append(audioRefs, audioRef)
+	}
 
 	// Default public to true (like Leonardo web client)
 	isPublic := true
@@ -2312,6 +2339,7 @@ func (s *Server) HandleLeonardoGenerate(w http.ResponseWriter, r *http.Request) 
 			StartFrame:     startFrames,
 			EndFrame:       endFrames,
 			VideoRefs:      videoRefs,
+			AudioRefs:      audioRefs,
 		},
 	}
 
@@ -2555,6 +2583,82 @@ func (s *Server) HandleLeonardoUploadImage(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// HandleLeonardoUploadAudio handles POST /api/v1/leonardo/upload-audio.
+// Accepts multipart form with "file" field and optional "token_id".
+// Returns the uploaded audio ID for use in audio_reference.
+func (s *Server) HandleLeonardoUploadAudio(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]string{"detail": "method not allowed"})
+		return
+	}
+	if s.LeonardoClient == nil {
+		writeJSON(w, 500, map[string]string{"detail": "Leonardo client not initialized"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(maxRemoteAudioBytes); err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "failed to parse form: " + err.Error()})
+		return
+	}
+
+	tokenID := r.FormValue("token_id")
+	session, _ := s.getLeonardoSession(tokenID)
+	if session == nil {
+		writeJSON(w, 404, map[string]string{"detail": "Leonardo token not found"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"detail": "file is required"})
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(io.LimitReader(file, maxRemoteAudioBytes+1))
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"detail": "failed to read file"})
+		return
+	}
+	if len(audioData) > maxRemoteAudioBytes {
+		writeJSON(w, 400, map[string]string{"detail": fmt.Sprintf("audio file exceeds %d MB limit", maxRemoteAudioBytes>>20)})
+		return
+	}
+
+	ext := audioExtFromURL(header.Filename)
+	if ext == "" {
+		contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+			contentType = mediaType
+		}
+		ext = audioExtFromContentType(contentType)
+	}
+	if ext == "" {
+		writeJSON(w, 400, map[string]string{"detail": "unsupported audio file type"})
+		return
+	}
+	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+		contentType = mediaType
+	}
+	if contentType == "" || !strings.HasPrefix(contentType, "audio/") {
+		contentType = audioContentTypeFromExt(ext)
+	}
+
+	audioID, duration, err := s.uploadLeonardoAudioBytes(session, audioData, ext, contentType, header.Filename)
+	if err != nil {
+		writeJSON(w, 500, map[string]interface{}{"detail": err.Error()})
+		return
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":       true,
+		"audio_id": audioID,
+		"type":     "UPLOADED",
+		"duration": duration,
+	})
+}
+
 func (s *Server) resolveLeonardoImageID(session *leonardo.TokenSession, id, remoteURL string, cache map[string]string) (string, error) {
 	imageID := strings.TrimSpace(id)
 	if imageID != "" {
@@ -2648,6 +2752,47 @@ func (s *Server) resolveLeonardoVideoRef(session *leonardo.TokenSession, id, rem
 	}, nil
 }
 
+func (s *Server) resolveLeonardoAudioRef(session *leonardo.TokenSession, id, remoteURL string, durationHint float64, cache map[string]string) (leonardo.AudioRef, error) {
+	audioID := strings.TrimSpace(id)
+	if audioID != "" {
+		return leonardo.AudioRef{
+			ID:       audioID,
+			Type:     "UPLOADED",
+			Duration: durationHint,
+		}, nil
+	}
+
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		return leonardo.AudioRef{}, fmt.Errorf("either id or url is required")
+	}
+	if cache != nil {
+		if cachedID, ok := cache[remoteURL]; ok && cachedID != "" {
+			return leonardo.AudioRef{
+				ID:       cachedID,
+				Type:     "UPLOADED",
+				Duration: durationHint,
+			}, nil
+		}
+	}
+
+	uploadedID, detectedDuration, err := s.uploadLeonardoAudioFromURL(session, remoteURL)
+	if err != nil {
+		return leonardo.AudioRef{}, err
+	}
+	if cache != nil {
+		cache[remoteURL] = uploadedID
+	}
+	if durationHint <= 0 {
+		durationHint = detectedDuration
+	}
+	return leonardo.AudioRef{
+		ID:       uploadedID,
+		Type:     "UPLOADED",
+		Duration: durationHint,
+	}, nil
+}
+
 func (s *Server) uploadLeonardoImageFromURL(session *leonardo.TokenSession, remoteURL string) (string, error) {
 	imageData, contentType, ext, err := s.downloadRemoteImage(remoteURL)
 	if err != nil {
@@ -2713,11 +2858,15 @@ func isRetryableRemoteFetchStatus(statusCode int) bool {
 }
 
 func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string) (*leonardo.UploadInitResult, error) {
+	return s.uploadLeonardoBytesToStagingWithFilename(session, mediaData, ext, contentType, mediaKind, "")
+}
+
+func (s *Server) uploadLeonardoBytesToStagingWithFilename(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string, originalFilename string) (*leonardo.UploadInitResult, error) {
 	const maxInitAttempts = 5
 	var lastErr error
 
 	for attempt := 1; attempt <= maxInitAttempts; attempt++ {
-		initResult, err := s.LeonardoClient.UploadInitImage(session, ext)
+		initResult, err := s.LeonardoClient.UploadInitMedia(session, ext, originalFilename)
 		if err != nil {
 			lastErr = fmt.Errorf("upload init failed: %w", err)
 			if attempt < maxInitAttempts && isRetryableRemoteFetchError(err) {
@@ -2764,6 +2913,20 @@ func (s *Server) uploadLeonardoVideoFromURL(session *leonardo.TokenSession, remo
 	return videoID, duration, nil
 }
 
+func (s *Server) uploadLeonardoAudioFromURL(session *leonardo.TokenSession, remoteURL string) (string, float64, error) {
+	audioData, contentType, ext, filename, err := s.downloadRemoteAudio(remoteURL)
+	if err != nil {
+		return "", 0, err
+	}
+	log.Printf("[Leonardo] Remote audio fetched: url=%s contentType=%s ext=%s bytes=%d", remoteURL, contentType, ext, len(audioData))
+	audioID, duration, err := s.uploadLeonardoAudioBytes(session, audioData, ext, contentType, filename)
+	if err != nil {
+		return "", 0, err
+	}
+	log.Printf("[Leonardo] Remote audio uploaded: url=%s audioID=%s duration=%.3fs", remoteURL, audioID, duration)
+	return audioID, duration, nil
+}
+
 func (s *Server) uploadLeonardoImageBytes(session *leonardo.TokenSession, imageData []byte, ext, contentType string) (string, error) {
 	initResult, err := s.uploadLeonardoBytesToStaging(session, imageData, ext, contentType, "image")
 	if err != nil {
@@ -2795,6 +2958,36 @@ func (s *Server) uploadLeonardoVideoBytes(session *leonardo.TokenSession, videoD
 	}
 	log.Printf("[Leonardo] Video upload ready: uploadID=%s status=%s width=%v height=%v duration=%.3fs url=%s", initResult.UploadID, uploadedMedia.Status, uploadedMedia.Width, uploadedMedia.Height, videoDuration, uploadedMedia.URL)
 	return initResult.UploadID, nil
+}
+
+func (s *Server) uploadLeonardoAudioBytes(session *leonardo.TokenSession, audioData []byte, ext, contentType, originalFilename string) (string, float64, error) {
+	ext = strings.TrimPrefix(strings.TrimSpace(ext), ".")
+	if ext == "" {
+		ext = "mp3"
+	}
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "audio/mpeg"
+	}
+	if strings.TrimSpace(originalFilename) == "" {
+		originalFilename = "audio." + strings.ToLower(ext)
+	}
+
+	initResult, err := s.uploadLeonardoBytesToStagingWithFilename(session, audioData, strings.ToUpper(ext), contentType, "audio", originalFilename)
+	if err != nil {
+		return "", 0, err
+	}
+	log.Printf("[Leonardo] Audio upload staged: uploadID=%s ext=%s contentType=%s bytes=%d", initResult.UploadID, ext, contentType, len(audioData))
+
+	uploadedMedia, err := s.LeonardoClient.WaitForUploadedMedia(session, initResult.UploadID, initImageLookupTimeout)
+	if err != nil {
+		return "", 0, fmt.Errorf("wait for staged audio asset failed: %w", err)
+	}
+	duration := 0.0
+	if uploadedMedia.Duration != nil {
+		duration = *uploadedMedia.Duration
+	}
+	log.Printf("[Leonardo] Audio upload ready: uploadID=%s status=%s duration=%.3fs url=%s", initResult.UploadID, uploadedMedia.Status, duration, uploadedMedia.URL)
+	return initResult.UploadID, duration, nil
 }
 
 func (s *Server) downloadRemoteImage(remoteURL string) ([]byte, string, string, error) {
@@ -2972,6 +3165,101 @@ func (s *Server) downloadRemoteVideo(remoteURL string) ([]byte, string, string, 
 	return nil, "", "", 0, fmt.Errorf("fetch video url failed after %d attempt(s)", remoteFetchMaxAttempts)
 }
 
+func (s *Server) downloadRemoteAudio(remoteURL string) ([]byte, string, string, string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("invalid audio url: %w", err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return nil, "", "", "", fmt.Errorf("audio url must use http or https")
+	}
+	if parsedURL.RawPath == "" {
+		parsedURL.RawPath = parsedURL.EscapedPath()
+	}
+
+	httpClient, err := s.newResourceHTTPClient(remoteAudioFetchTimeout)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+
+	for attempt := 1; attempt <= remoteFetchMaxAttempts; attempt++ {
+		req, err := http.NewRequest("GET", parsedURL.String(), nil)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		req.Header.Set("User-Agent", "leo-go-audio-fetch/1.0")
+		req.Header.Set("Accept", "audio/*,*/*;q=0.8")
+		req.Close = true
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(err) {
+				log.Printf("[Leonardo] Remote audio fetch attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, err)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
+			return nil, "", "", "", fmt.Errorf("fetch audio url failed: %w", err)
+		}
+
+		audioData, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRemoteAudioBytes+1))
+		resp.Body.Close()
+		if readErr != nil {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchError(readErr) {
+				log.Printf("[Leonardo] Remote audio read attempt %d/%d failed for %s: %v; retrying", attempt, remoteFetchMaxAttempts, remoteURL, readErr)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
+			return nil, "", "", "", fmt.Errorf("read audio url failed: %w", readErr)
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if attempt < remoteFetchMaxAttempts && isRetryableRemoteFetchStatus(resp.StatusCode) {
+				log.Printf("[Leonardo] Remote audio fetch attempt %d/%d returned retryable status %d for %s; retrying", attempt, remoteFetchMaxAttempts, resp.StatusCode, remoteURL)
+				time.Sleep(time.Duration(attempt) * remoteFetchRetryDelay)
+				continue
+			}
+			return nil, "", "", "", fmt.Errorf("audio url returned %d", resp.StatusCode)
+		}
+		if len(audioData) == 0 {
+			return nil, "", "", "", fmt.Errorf("audio url returned empty body")
+		}
+		if len(audioData) > maxRemoteAudioBytes {
+			return nil, "", "", "", fmt.Errorf("audio url exceeds %d MB limit", maxRemoteAudioBytes>>20)
+		}
+
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+			contentType = mediaType
+		}
+		ext := audioExtFromContentType(contentType)
+		if ext == "" {
+			ext = audioExtFromURL(parsedURL.Path)
+		}
+		if contentType == "" || !strings.HasPrefix(contentType, "audio/") {
+			if detected := http.DetectContentType(audioData); strings.HasPrefix(detected, "audio/") {
+				contentType = detected
+				if ext == "" {
+					ext = audioExtFromContentType(detected)
+				}
+			}
+		}
+		if ext == "" {
+			return nil, "", "", "", fmt.Errorf("audio url did not return a supported audio type")
+		}
+		if contentType == "" || !strings.HasPrefix(contentType, "audio/") {
+			contentType = audioContentTypeFromExt(ext)
+		}
+
+		filename := pathpkg.Base(parsedURL.Path)
+		if filename == "." || filename == "/" || strings.TrimSpace(filename) == "" {
+			filename = "audio." + ext
+		}
+		return audioData, contentType, ext, filename, nil
+	}
+
+	return nil, "", "", "", fmt.Errorf("fetch audio url failed after %d attempt(s)", remoteFetchMaxAttempts)
+}
+
 func detectRemoteVideoDuration(videoData []byte, contentType, ext string) float64 {
 	normalizedExt := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
 	if normalizedExt != "mp4" && normalizedExt != "m4v" && normalizedExt != "mov" && !strings.Contains(strings.ToLower(contentType), "mp4") && !strings.Contains(strings.ToLower(contentType), "quicktime") {
@@ -3142,6 +3430,54 @@ func videoExtFromURL(rawPath string) string {
 		return ext
 	default:
 		return ""
+	}
+}
+
+func audioExtFromContentType(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/wav", "audio/x-wav", "audio/wave":
+		return "wav"
+	case "audio/mp4", "audio/x-m4a":
+		return "m4a"
+	case "audio/aac":
+		return "aac"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/webm":
+		return "webm"
+	default:
+		return ""
+	}
+}
+
+func audioExtFromURL(rawPath string) string {
+	ext := strings.TrimPrefix(strings.ToLower(pathpkg.Ext(rawPath)), ".")
+	switch ext {
+	case "mp3", "wav", "m4a", "aac", "ogg", "webm":
+		return ext
+	default:
+		return ""
+	}
+}
+
+func audioContentTypeFromExt(ext string) string {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), ".")) {
+	case "mp3":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "m4a":
+		return "audio/mp4"
+	case "aac":
+		return "audio/aac"
+	case "ogg":
+		return "audio/ogg"
+	case "webm":
+		return "audio/webm"
+	default:
+		return "audio/mpeg"
 	}
 }
 

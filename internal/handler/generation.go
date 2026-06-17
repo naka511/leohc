@@ -227,6 +227,10 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseModelID := publicVideoModelID(modelID)
+	if hasAudioReferenceInput(data) && !isSeedanceModelID(modelID) {
+		writeJSON(w, 400, errorResp("audio_reference is only supported for video-2.0 and video-2.0-fast", "invalid_request_error"))
+		return
+	}
 	duration := defaultVideoDuration(modelID)
 	klingO3VideoRefMode := isKlingO3ModelID(modelID) && hasVideoReferenceInput(data)
 	if klingO3VideoRefMode {
@@ -319,7 +323,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		imageRefs, startFrames, endFrames, videoRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session, modelID)
+		imageRefs, startFrames, endFrames, videoRefs, audioRefs, err := s.resolveOpenAIVideoGuidanceInputs(data, session, modelID)
 		if err != nil {
 			if isRetryableGuidancePreparationError(err) {
 				failure := &videoGenerationAttemptFailure{
@@ -359,7 +363,7 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		submission, failure := s.submitLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs)
+		submission, failure := s.submitLeonardoVideoGeneration(session, usedTokenID, attempt, prompt, modelID, duration, width, height, imageRefs, startFrames, endFrames, videoRefs, audioRefs)
 		if failure == nil {
 			releaseTokenPreparation()
 			go s.trackLeonardoVideoGeneration(session, usedTokenID, modelID, submission.GenerationID, submission.CreatedAt)
@@ -917,6 +921,27 @@ func hasVideoReferenceInput(data map[string]interface{}) bool {
 	return false
 }
 
+func hasAudioReferenceInput(data map[string]interface{}) bool {
+	if data == nil {
+		return false
+	}
+	if strings.TrimSpace(toString(data["audio_url"])) != "" {
+		return true
+	}
+	if rawAudios, ok := audioReferenceInputs(data); ok {
+		for _, item := range rawAudios {
+			entry, _ := item.(map[string]interface{})
+			if audio, ok := entry["audio"].(map[string]interface{}); ok {
+				entry = audio
+			}
+			if strings.TrimSpace(toString(entry["id"])) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasUnsupportedKlingO3GuidanceInput(data map[string]interface{}) bool {
 	return false
 }
@@ -928,7 +953,7 @@ func leonardoVideoResolutionMode(modelID string, width int, height int) string {
 	return "RESOLUTION_720"
 }
 
-func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef) (*videoGenerationSubmission, *videoGenerationAttemptFailure) {
+func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, usedTokenID string, tokenAttempt int, prompt string, modelID string, duration int, width int, height int, imageRefs []leonardo.ImageRef, startFrames []leonardo.FrameRef, endFrames []leonardo.FrameRef, videoRefs []leonardo.VideoRef, audioRefs []leonardo.AudioRef) (*videoGenerationSubmission, *videoGenerationAttemptFailure) {
 	if s.LeonardoClient == nil {
 		return nil, &videoGenerationAttemptFailure{
 			StatusCode:      http.StatusInternalServerError,
@@ -952,6 +977,7 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 			StartFrame:     startFrames,
 			EndFrame:       endFrames,
 			VideoRefs:      videoRefs,
+			AudioRefs:      audioRefs,
 		},
 	}
 
@@ -1063,13 +1089,15 @@ func (s *Server) trackLeonardoVideoGeneration(session *leonardo.TokenSession, us
 	s.refreshTokenCredits(usedTokenID, session)
 }
 
-func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession, modelID string) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, error) {
+func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, session *leonardo.TokenSession, modelID string) ([]leonardo.ImageRef, []leonardo.FrameRef, []leonardo.FrameRef, []leonardo.VideoRef, []leonardo.AudioRef, error) {
 	uploadCache := make(map[string]string)
 
 	var imageRefs []leonardo.ImageRef
 	var startFrames []leonardo.FrameRef
 	var endFrames []leonardo.FrameRef
 	var videoRefs []leonardo.VideoRef
+	var audioRefs []leonardo.AudioRef
+	audioUploadCache := make(map[string]string)
 	hasVideoInput := strings.TrimSpace(toString(data["video_url"])) != ""
 	if !hasVideoInput {
 		if rawVideos, ok := data["video_reference"].([]interface{}); ok {
@@ -1086,7 +1114,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	if imageURL := strings.TrimSpace(toString(data["image_url"])); imageURL != "" {
 		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("invalid image_url: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("invalid image_url: %w", err)
 		}
 		if hasVideoInput || isKlingO3ModelID(modelID) {
 			imageRefs = append(imageRefs, leonardo.ImageRef{
@@ -1102,7 +1130,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	if imageURL := strings.TrimSpace(toString(data["start_image_url"])); imageURL != "" {
 		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("invalid start_image_url: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("invalid start_image_url: %w", err)
 		}
 		startFrames = append(startFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
 	}
@@ -1110,7 +1138,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	if imageURL := strings.TrimSpace(toString(data["end_image_url"])); imageURL != "" {
 		imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("invalid end_image_url: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("invalid end_image_url: %w", err)
 		}
 		endFrames = append(endFrames, leonardo.FrameRef{ID: imageID, Type: "UPLOADED"})
 	}
@@ -1123,7 +1151,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			}
 			imageID, err := s.resolveLeonardoImageID(session, "", imageURL, uploadCache)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid image_urls[%d]: %w", idx, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid image_urls[%d]: %w", idx, err)
 			}
 			imageRefs = append(imageRefs, leonardo.ImageRef{
 				ID:       imageID,
@@ -1140,7 +1168,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			rawURL := toString(entry["url"])
 			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid image_guidance[%d]: %w", idx, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid image_guidance[%d]: %w", idx, err)
 			}
 			refType := strings.TrimSpace(toString(entry["type"]))
 			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
@@ -1165,7 +1193,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			rawURL := toString(entry["url"])
 			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid start_frame[%d]: %w", idx, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid start_frame[%d]: %w", idx, err)
 			}
 			refType := strings.TrimSpace(toString(entry["type"]))
 			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
@@ -1182,7 +1210,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			rawURL := toString(entry["url"])
 			imageID, err := s.resolveLeonardoImageID(session, rawID, rawURL, uploadCache)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid end_frame[%d]: %w", idx, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid end_frame[%d]: %w", idx, err)
 			}
 			refType := strings.TrimSpace(toString(entry["type"]))
 			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
@@ -1195,7 +1223,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 	if videoURL := strings.TrimSpace(toString(data["video_url"])); videoURL != "" {
 		videoRef, err := s.resolveLeonardoVideoRef(session, "", videoURL, 0, uploadCache)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("invalid video_url: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("invalid video_url: %w", err)
 		}
 		videoRefs = append(videoRefs, videoRef)
 	}
@@ -1214,7 +1242,7 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 			}
 			videoRef, err := s.resolveLeonardoVideoRef(session, rawID, rawURL, durationHint, uploadCache)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: %w", idx, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid video_reference[%d]: %w", idx, err)
 			}
 			refType := strings.TrimSpace(toString(entry["type"]))
 			if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
@@ -1225,20 +1253,73 @@ func (s *Server) resolveOpenAIVideoGuidanceInputs(data map[string]interface{}, s
 		}
 	}
 
-	return imageRefs, startFrames, endFrames, videoRefs, nil
+	if audioURL := strings.TrimSpace(toString(data["audio_url"])); audioURL != "" {
+		audioRef, err := s.resolveLeonardoAudioRef(session, "", audioURL, 0, audioUploadCache)
+		if err != nil {
+			return nil, nil, nil, nil, nil, fmt.Errorf("invalid audio_url: %w", err)
+		}
+		audioRefs = append(audioRefs, audioRef)
+	}
+
+	if rawAudios, ok := audioReferenceInputs(data); ok {
+		for idx, item := range rawAudios {
+			ref, err := s.resolveLeonardoAudioRefFromInput(session, item, audioUploadCache)
+			if err != nil {
+				return nil, nil, nil, nil, nil, fmt.Errorf("invalid audio_reference[%d]: %w", idx, err)
+			}
+			audioRefs = append(audioRefs, ref)
+		}
+	}
+
+	return imageRefs, startFrames, endFrames, videoRefs, audioRefs, nil
+}
+
+func (s *Server) resolveLeonardoAudioRefFromInput(session *leonardo.TokenSession, item interface{}, cache map[string]string) (leonardo.AudioRef, error) {
+	entry, _ := item.(map[string]interface{})
+	if audio, ok := entry["audio"].(map[string]interface{}); ok {
+		entry = audio
+	}
+	rawID := toString(entry["id"])
+	rawURL := toString(entry["url"])
+	duration := toFloat64(entry["duration"])
+	ref, err := s.resolveLeonardoAudioRef(session, rawID, rawURL, duration, cache)
+	if err != nil {
+		return leonardo.AudioRef{}, err
+	}
+	refType := strings.TrimSpace(toString(entry["type"]))
+	if refType == "" || (strings.TrimSpace(rawID) == "" && strings.TrimSpace(rawURL) != "") {
+		refType = "UPLOADED"
+	}
+	ref.Type = refType
+	return ref, nil
+}
+
+func audioReferenceInputs(data map[string]interface{}) ([]interface{}, bool) {
+	if data == nil {
+		return nil, false
+	}
+	if rawAudios, ok := data["audio_reference"].([]interface{}); ok {
+		return rawAudios, true
+	}
+	guidances, _ := data["guidances"].(map[string]interface{})
+	if guidances == nil {
+		return nil, false
+	}
+	rawAudios, ok := guidances["audio_reference"].([]interface{})
+	return rawAudios, ok
 }
 
 func hasUnsupportedSora2GuidanceInput(data map[string]interface{}) bool {
 	if data == nil {
 		return false
 	}
-	stringFields := []string{"end_image_url", "video_url"}
+	stringFields := []string{"end_image_url", "video_url", "audio_url"}
 	for _, field := range stringFields {
 		if strings.TrimSpace(toString(data[field])) != "" {
 			return true
 		}
 	}
-	arrayFields := []string{"image_urls", "image_guidance", "end_frame", "video_reference"}
+	arrayFields := []string{"image_urls", "image_guidance", "end_frame", "video_reference", "audio_reference"}
 	for _, field := range arrayFields {
 		if rawItems, ok := data[field].([]interface{}); ok && len(rawItems) > 0 {
 			return true

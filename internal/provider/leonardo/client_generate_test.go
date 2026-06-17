@@ -431,6 +431,78 @@ func TestGenerateBuildsKlingO3ImageToVideoPayload(t *testing.T) {
 	}
 }
 
+func TestGenerateBuildsSeedanceAudioReferencePayload(t *testing.T) {
+	var requestBody string
+	client := NewClient("")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			requestBody = string(body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"generate":{"apiCreditCost":12,"generationId":"gen-audio"}}}`)),
+			}, nil
+		}),
+	}
+	session := &TokenSession{
+		JWT:       "jwt",
+		JWTExpiry: time.Now().Add(time.Hour),
+	}
+
+	_, err := client.Generate(session, &GenerateRequest{
+		Model:  "seedance-2.0-fast",
+		Public: true,
+		Params: GenerateParams{
+			Prompt:         "可爱的兔子在玩耍，背景音乐是@音频1",
+			Duration:       4,
+			Quantity:       1,
+			Width:          720,
+			Height:         1280,
+			MotionHasAudio: true,
+			Seed:           -1,
+			ImageRefs: []ImageRef{{
+				ID:       "4132aceb-98b6-47b8-856e-12f95871bad0",
+				Type:     "UPLOADED",
+				Strength: "MID",
+			}},
+			AudioRefs: []AudioRef{{
+				ID:       "9be72770-3a31-4791-84bb-5047fc0d1fa9",
+				Type:     "UPLOADED",
+				Duration: 14.915917,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+
+	payload := mustJSONMap(t, requestBody)
+	request := payload["variables"].(map[string]interface{})["request"].(map[string]interface{})
+	if request["model"] != "seedance-2.0-fast" {
+		t.Fatalf("model = %v, want seedance-2.0-fast", request["model"])
+	}
+	params := request["parameters"].(map[string]interface{})
+	guidances := params["guidances"].(map[string]interface{})
+	audioRefs := guidances["audio_reference"].([]interface{})
+	if len(audioRefs) != 1 {
+		t.Fatalf("audio_reference length = %d, want 1", len(audioRefs))
+	}
+	audio := audioRefs[0].(map[string]interface{})["audio"].(map[string]interface{})
+	if audio["id"] != "9be72770-3a31-4791-84bb-5047fc0d1fa9" {
+		t.Fatalf("audio id = %v", audio["id"])
+	}
+	if audio["type"] != "UPLOADED" {
+		t.Fatalf("audio type = %v, want UPLOADED", audio["type"])
+	}
+	if audio["duration"] != 14.915917 {
+		t.Fatalf("audio duration = %v, want 14.915917", audio["duration"])
+	}
+}
+
 func TestGenerateBuildsKlingO3StartEndFramePayload(t *testing.T) {
 	var requestBody string
 	client := NewClient("")
