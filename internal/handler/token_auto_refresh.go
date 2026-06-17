@@ -363,6 +363,9 @@ func (s *Server) recordLeonardoRefreshFailure(tokenID string, err error) leonard
 		log.Printf("[token] failed to mark token %s as %s: %v", tokenID, finalStatus, setErr)
 		return result
 	}
+	if setErr := s.TokenMgr.SetAutoRefresh(tokenID, false); setErr != nil {
+		log.Printf("[token] failed to disable auto-refresh after confirmed refresh failure for %s: %v", tokenID, setErr)
+	}
 	result.finalStatus = finalStatus
 	return result
 }
