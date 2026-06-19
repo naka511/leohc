@@ -178,3 +178,28 @@ func TestRoundRobinFromStartCandidatesDoNotAdvance(t *testing.T) {
 		t.Fatalf("first candidate with token-a disabled = %v, want token-b", got)
 	}
 }
+
+func TestRefreshFailureExcludesTokenFromCandidatesUntilRecovered(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&memoryTokenStore{})
+	for _, value := range []string{"token-a", "token-b"} {
+		if _, _, err := m.Add(value, "leonardo", "session_token", "", "", ""); err != nil {
+			t.Fatalf("add %s: %v", value, err)
+		}
+	}
+
+	m.ReportRefreshFailure(GenerateTokenID("token-a"), "no JWT found")
+	candidates := m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-b") {
+		t.Fatalf("first candidate with token-a refresh failed = %v, want token-b", got)
+	}
+
+	if err := m.SetStatus(GenerateTokenID("token-a"), "active"); err != nil {
+		t.Fatalf("restore token-a: %v", err)
+	}
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-a") {
+		t.Fatalf("first candidate after token-a recovery = %v, want token-a", got)
+	}
+}

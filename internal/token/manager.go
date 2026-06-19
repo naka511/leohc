@@ -301,7 +301,7 @@ func (m *Manager) GetAvailable(strategy string) string {
 	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if isTokenSelectableAt(t, now) {
 			active = append(active, t)
 		}
 	}
@@ -335,7 +335,7 @@ func (m *Manager) GetAvailableForPlatform(platform, strategy string) string {
 	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && isTokenSelectableAt(t, now) {
 			active = append(active, t)
 		}
 	}
@@ -366,7 +366,7 @@ func (m *Manager) GetAvailableTokenForPlatform(platform, strategy string) map[st
 	now := currentTimestamp()
 	var active []*Token
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && isTokenSelectableAt(t, now) {
 			active = append(active, t)
 		}
 	}
@@ -457,7 +457,7 @@ func shouldAdvanceRoundRobinCursor(strategy string) bool {
 func (m *Manager) availableTokensForPlatformFromStartLocked(platform string, now float64) []*Token {
 	active := make([]*Token, 0, len(m.tokens))
 	for _, t := range m.tokens {
-		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if t.Platform == platform && isTokenSelectableAt(t, now) {
 			active = append(active, t)
 		}
 	}
@@ -486,7 +486,7 @@ func (m *Manager) availableTokensForPlatformInRoundRobinOrderLocked(platform str
 	active := make([]*Token, 0, len(platformTokens))
 	for offset := 0; offset < len(platformTokens); offset++ {
 		t := platformTokens[(start+offset)%len(platformTokens)]
-		if t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+		if isTokenSelectableAt(t, now) {
 			active = append(active, t)
 		}
 	}
@@ -495,6 +495,14 @@ func (m *Manager) availableTokensForPlatformInRoundRobinOrderLocked(platform str
 
 func isTokenExpiredAt(t *Token, now float64) bool {
 	return t != nil && t.ExpiresAt > 0 && now >= t.ExpiresAt
+}
+
+func isTokenSelectableAt(t *Token, now float64) bool {
+	return t != nil &&
+		t.Status == "active" &&
+		t.RefreshFailCount <= 0 &&
+		!isTokenExpiredAt(t, now) &&
+		(t.ErrorUntil == 0 || now >= t.ErrorUntil)
 }
 
 // ReportSuccess marks a token as successfully used.
