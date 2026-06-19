@@ -120,6 +120,7 @@ type videoGenerationAttemptFailure struct {
 	ErrorType       string
 	RetryCodeSource string
 	MarkInvalid     bool
+	Insufficient    bool
 }
 
 type videoGenerationSubmission struct {
@@ -312,7 +313,13 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 	var lastSession *leonardo.TokenSession
 	var lastAttempt int
 
-	for attempt := 1; attempt <= retryPolicy.MaxAttempts; attempt++ {
+	maxAttempts := retryPolicy.MaxAttempts
+	if s != nil && s.TokenMgr != nil {
+		if tokenCount := s.TokenMgr.Count(); tokenCount > maxAttempts {
+			maxAttempts = tokenCount
+		}
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		session, usedTokenID, releaseTokenPreparation := s.getLeonardoSessionForModelExcludingWithPreparationLease("", triedTokenIDs, modelID, klingO3VideoRefMode)
 		if session == nil {
 			if lastFailure != nil {
@@ -384,14 +391,18 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		lastSession = session
 		lastAttempt = attempt
 
-		if retryPolicy.shouldRetry(failure) && attempt < retryPolicy.MaxAttempts {
+		if failure.Insufficient || (retryPolicy.shouldRetry(failure) && attempt < retryPolicy.MaxAttempts) {
 			triedTokenIDs[usedTokenID] = true
 			if s.TokenMgr != nil && usedTokenID != "" {
-				s.TokenMgr.ReportFail(usedTokenID)
+				if failure.Insufficient {
+					s.refreshTokenCredits(usedTokenID, session)
+				} else {
+					s.TokenMgr.ReportFail(usedTokenID)
+				}
 			}
 			releaseTokenPreparation()
 			delay := retryPolicy.backoffDelay(attempt)
-			if delay > 0 {
+			if !failure.Insufficient && delay > 0 {
 				time.Sleep(delay)
 			}
 			continue
@@ -400,6 +411,8 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		if s.TokenMgr != nil && usedTokenID != "" {
 			if failure.MarkInvalid {
 				s.TokenMgr.ReportInvalid(usedTokenID)
+			} else if failure.Insufficient {
+				s.refreshTokenCredits(usedTokenID, session)
 			} else if retryPolicy.shouldRetry(failure) {
 				s.TokenMgr.ReportFail(usedTokenID)
 			}
@@ -414,6 +427,8 @@ func (s *Server) HandleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 		if s.TokenMgr != nil && lastTokenID != "" {
 			if lastFailure.MarkInvalid {
 				s.TokenMgr.ReportInvalid(lastTokenID)
+			} else if lastFailure.Insufficient {
+				s.refreshTokenCredits(lastTokenID, lastSession)
 			} else if retryPolicy.shouldRetry(lastFailure) {
 				s.TokenMgr.ReportFail(lastTokenID)
 			}
@@ -986,15 +1001,13 @@ func (s *Server) submitLeonardoVideoGeneration(session *leonardo.TokenSession, u
 	if err != nil {
 		statusCode := statusCodeFromGenerationError(err)
 		insufficientTokens := isInsufficientTokensMessage(err.Error())
-		if insufficientTokens {
-			s.markTokenExhausted(usedTokenID, err.Error())
-		}
 		return nil, &videoGenerationAttemptFailure{
 			StatusCode:      statusCode,
 			Message:         fmt.Sprintf("generation failed: %v", err),
 			ErrorType:       "server_error",
 			RetryCodeSource: extractRetryCodeSource(err.Error()),
 			MarkInvalid:     !insufficientTokens && !isRetryableGenerationError(err),
+			Insufficient:    insufficientTokens,
 		}
 	}
 	s.applyTokenCreditCost(usedTokenID, result.APICreditCost)
