@@ -3703,6 +3703,10 @@ func (s *Server) tokenCanAcceptMoreRunningTasks(tokenID string) bool {
 	return s.tokenRunningGenerationCount(tokenID) < s.tokenMaxRunningTasks()
 }
 
+func (s *Server) tokenCanAcceptSubmission(tokenID string) bool {
+	return !s.tokenHasPreparationLease(tokenID) && s.tokenCanAcceptMoreRunningTasks(tokenID)
+}
+
 func (s *Server) sora2DedicatedModeEnabled() bool {
 	if s == nil || s.Config == nil {
 		return false
@@ -3782,7 +3786,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		if excluded != nil && excluded[tokenID] {
 			return nil, "", release
 		}
-		if s.tokenHasPreparationLease(tokenID) || !s.reserveTokenPreparation(tokenID) {
+		if !s.tokenCanAcceptSubmission(tokenID) || !s.reserveTokenPreparation(tokenID) {
 			return nil, "", release
 		}
 		session, usedTokenID := s.getLeonardoSessionForModel(tokenID, modelID, videoReferenceMode)
@@ -3807,7 +3811,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		if foundID == "" || (excluded != nil && excluded[foundID]) {
 			continue
 		}
-		if s.tokenHasPreparationLease(foundID) || !s.tokenCanAcceptMoreRunningTasks(foundID) {
+		if !s.tokenCanAcceptSubmission(foundID) {
 			continue
 		}
 		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
@@ -3844,7 +3848,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if excluded != nil && excluded[tokenID] {
 			return nil, ""
 		}
-		if !s.tokenCanAcceptMoreRunningTasks(tokenID) {
+		if !s.tokenCanAcceptSubmission(tokenID) {
 			return nil, ""
 		}
 		return s.getLeonardoSessionForModel(tokenID, modelID, false)
@@ -3864,7 +3868,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if foundID == "" || (excluded != nil && excluded[foundID]) {
 			continue
 		}
-		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
+		if !s.tokenCanAcceptSubmission(foundID) {
 			continue
 		}
 		if !s.tokenCanRunModelByCredits(info, modelID, false) {
@@ -3940,7 +3944,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		if foundID == "" {
 			continue
 		}
-		if !s.tokenCanAcceptMoreRunningTasks(foundID) {
+		if !s.tokenCanAcceptSubmission(foundID) {
 			continue
 		}
 		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
