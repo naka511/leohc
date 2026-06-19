@@ -257,7 +257,8 @@
             <div class="form-group">
               <label for="confTokenRotationStrategy">Token 轮换策略</label>
               <select id="confTokenRotationStrategy" class="input-select">
-                <option value="round_robin">round_robin（始终轮换）</option>
+                <option value="round_robin">round_robin（接着上次位置）</option>
+                <option value="round_robin_from_start">round_robin_from_start（每次从头开始）</option>
                 <option value="random">random（随机轮换）</option>
               </select>
             </div>

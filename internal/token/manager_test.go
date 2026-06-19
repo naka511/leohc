@@ -148,3 +148,33 @@ func TestRoundRobinCandidatesAdvanceOnlyAfterCommit(t *testing.T) {
 		t.Fatalf("first candidate after token-c recovery = %v, want token-c", got)
 	}
 }
+
+func TestRoundRobinFromStartCandidatesDoNotAdvance(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(&memoryTokenStore{})
+	for _, value := range []string{"token-a", "token-b", "token-c"} {
+		if _, _, err := m.Add(value, "leonardo", "session_token", "", "", ""); err != nil {
+			t.Fatalf("add %s: %v", value, err)
+		}
+	}
+
+	candidates := m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-a") {
+		t.Fatalf("first candidate = %v, want token-a", got)
+	}
+
+	m.CommitAvailableTokenForPlatform("leonardo", GenerateTokenID("token-b"), "round_robin_from_start")
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-a") {
+		t.Fatalf("first candidate after commit = %v, want token-a", got)
+	}
+
+	if err := m.SetStatus(GenerateTokenID("token-a"), "disabled"); err != nil {
+		t.Fatalf("disable token-a: %v", err)
+	}
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-b") {
+		t.Fatalf("first candidate with token-a disabled = %v, want token-b", got)
+	}
+}
