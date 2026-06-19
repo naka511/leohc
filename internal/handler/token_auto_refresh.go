@@ -8,7 +8,7 @@ import (
 )
 
 const autoRefreshRetryCooldown = time.Minute
-const tokenRefreshFailureThreshold = 3
+const tokenRefreshFailureThreshold = 2
 
 // StartTokenAutoRefreshLoop starts the background Leonardo token refresh sweep.
 func (s *Server) StartTokenAutoRefreshLoop() {

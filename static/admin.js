@@ -328,7 +328,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const finalFailed = count >= 3 || status === "invalid" || status === "abnormal";
     const prefix = finalFailed ? "连续失败" : "刷新失败";
     const color = finalFailed ? "#ffb4bc" : "#ffca58";
-    return `<div style="margin-top:4px; font-size:11px; line-height:1.3; color:${color}; max-width:160px;" title="${escapeHtml(reason)}">${prefix} ${count}/3：${escapeHtml(reason)}</div>`;
+    return `<div style="margin-top:4px; font-size:11px; line-height:1.3; color:${color}; max-width:160px;" title="${escapeHtml(reason)}">${prefix} ${count}/2：${escapeHtml(reason)}</div>`;
   }
 
   function formatCredits(token) {
