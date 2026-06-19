@@ -194,6 +194,11 @@ func TestRefreshFailureExcludesTokenFromCandidatesUntilRecovered(t *testing.T) {
 	if got := candidates[0]["id"]; got != GenerateTokenID("token-b") {
 		t.Fatalf("first candidate with token-a refresh failed = %v, want token-b", got)
 	}
+	m.ReportRefreshFailure(GenerateTokenID("token-a"), "no JWT found")
+	candidates = m.AvailableTokensForPlatform("leonardo", "round_robin_from_start")
+	if got := candidates[0]["id"]; got != GenerateTokenID("token-b") {
+		t.Fatalf("first candidate with token-a confirmed failed = %v, want token-b", got)
+	}
 
 	if err := m.SetStatus(GenerateTokenID("token-a"), "active"); err != nil {
 		t.Fatalf("restore token-a: %v", err)
