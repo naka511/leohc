@@ -1141,6 +1141,12 @@ curl "http://127.0.0.1:8787/api/v1/leonardo/status?id=GENERATION_ID&token_id=YOU
 }
 ```
 
+`token_rotation_strategy` supports:
+
+- `round_robin`: continue from the position after the last selected token.
+- `round_robin_from_start`: start from the first imported available token for every task.
+- `random`: shuffle available token candidates randomly.
+
 `sora2_dedicated_mode_enabled` 可在后台 `系统配置 -> 刷新与存储` 中开启。关闭时为默认
 `video+ko3` 模式：单个 Token 最多并行 2 个运行中任务，积分低于 `3400` 会标记为额度耗尽并关闭自动刷新；
 开启后为 `sora2` 专用模式：单个 Token 最多并行 5 个运行中任务，积分低于 `1200` 会标记为额度耗尽并关闭自动刷新。

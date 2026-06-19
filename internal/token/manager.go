@@ -399,7 +399,7 @@ func (m *Manager) AvailableTokensForPlatform(platform, strategy string) []map[st
 	defer m.mu.Unlock()
 
 	now := currentTimestamp()
-	active := m.availableTokensForPlatformInRoundRobinOrderLocked(platform, now)
+	active := m.availableTokensForPlatformInOrderLocked(platform, now, strategy)
 	if len(active) == 0 {
 		return nil
 	}
@@ -435,11 +435,33 @@ func (m *Manager) CommitAvailableTokenForPlatform(platform, tokenID, strategy st
 			continue
 		}
 		t.LastUsedAt = now
-		if !strings.EqualFold(strategy, "random") {
+		if shouldAdvanceRoundRobinCursor(strategy) {
 			m.rrNextID = platformTokens[(i+1)%len(platformTokens)].ID
 		}
 		return
 	}
+}
+
+func (m *Manager) availableTokensForPlatformInOrderLocked(platform string, now float64, strategy string) []*Token {
+	if strings.EqualFold(strategy, "round_robin_from_start") {
+		return m.availableTokensForPlatformFromStartLocked(platform, now)
+	}
+	return m.availableTokensForPlatformInRoundRobinOrderLocked(platform, now)
+}
+
+func shouldAdvanceRoundRobinCursor(strategy string) bool {
+	strategy = strings.ToLower(strings.TrimSpace(strategy))
+	return strategy == "" || strategy == "round_robin"
+}
+
+func (m *Manager) availableTokensForPlatformFromStartLocked(platform string, now float64) []*Token {
+	active := make([]*Token, 0, len(m.tokens))
+	for _, t := range m.tokens {
+		if t.Platform == platform && t.Status == "active" && !isTokenExpiredAt(t, now) && (t.ErrorUntil == 0 || now >= t.ErrorUntil) {
+			active = append(active, t)
+		}
+	}
+	return active
 }
 
 func (m *Manager) availableTokensForPlatformInRoundRobinOrderLocked(platform string, now float64) []*Token {

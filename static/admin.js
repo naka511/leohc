@@ -1491,7 +1491,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (!Number.isFinite(payload.retry_backoff_seconds) || payload.retry_backoff_seconds < 0 || payload.retry_backoff_seconds > 30) {
         throw new Error("重试退避基数必须是 0-30 的数字");
       }
-      if (!["round_robin", "random"].includes(payload.token_rotation_strategy)) {
+      if (!["round_robin", "round_robin_from_start", "random"].includes(payload.token_rotation_strategy)) {
         throw new Error("Token 轮换策略无效");
       }
       if (!Number.isInteger(payload.token_success_auto_disable_threshold) || payload.token_success_auto_disable_threshold < 1 || payload.token_success_auto_disable_threshold > 100000) {
