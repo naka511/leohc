@@ -68,6 +68,8 @@ const (
 	defaultKlingO3VideoDuration    = 3
 	defaultKlingO3VideoRefDuration = 5
 	tokenPreparationLeaseTTL       = 5 * time.Minute
+	generationJWTPreferredRemaining = 10 * time.Minute
+	generationJWTMinimumRemaining   = 5 * time.Minute
 	sora2RequiredCredits           = 1200
 	video2RequiredCredits          = 4550
 	video2FastRequiredCredits      = 3650

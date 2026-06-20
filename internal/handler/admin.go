@@ -3780,6 +3780,64 @@ func (s *Server) getLeonardoSessionExcluding(tokenID string, excluded map[string
 	return s.getLeonardoSessionForModelExcluding(tokenID, excluded, "")
 }
 
+func (s *Server) ensureGenerationJWTUsable(tokenID string, session *leonardo.TokenSession) error {
+	if s == nil || s.LeonardoClient == nil {
+		return fmt.Errorf("Leonardo client not initialized")
+	}
+	if session == nil {
+		return fmt.Errorf("Leonardo session not initialized")
+	}
+	if session.IsJWTValid() {
+		return nil
+	}
+	if err := s.LeonardoClient.RefreshSession(session); err != nil {
+		s.recordLeonardoRefreshFailure(tokenID, err)
+		return err
+	}
+	return nil
+}
+
+func generationJWTWindowPriority(info map[string]interface{}) int {
+	expiresAt := toFloat64(info["expires_at"])
+	if expiresAt <= 0 {
+		return 0
+	}
+	remaining := time.Until(time.Unix(int64(expiresAt), 0))
+	if remaining >= generationJWTPreferredRemaining {
+		return 0
+	}
+	if remaining >= generationJWTMinimumRemaining {
+		return 1
+	}
+	return 2
+}
+
+func (s *Server) generationTokenCandidates(candidates []map[string]interface{}, excluded map[string]bool, modelID string, videoReferenceMode bool) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(candidates))
+	for priority := 0; priority <= 1; priority++ {
+		for _, info := range candidates {
+			foundID := strings.TrimSpace(toString(info["id"]))
+			if foundID == "" || (excluded != nil && excluded[foundID]) {
+				continue
+			}
+			if generationJWTWindowPriority(info) != priority {
+				continue
+			}
+			if !s.tokenCanAcceptSubmission(foundID) {
+				continue
+			}
+			if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
+				continue
+			}
+			out = append(out, info)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return out
+}
+
 func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID string, excluded map[string]bool, modelID string, videoReferenceMode bool) (*leonardo.TokenSession, string, func()) {
 	release := func() {}
 	if tokenID != "" {
@@ -3805,16 +3863,10 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	candidates := s.generationTokenCandidates(s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy), excluded, modelID, videoReferenceMode)
 	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
-		if foundID == "" || (excluded != nil && excluded[foundID]) {
-			continue
-		}
-		if !s.tokenCanAcceptSubmission(foundID) {
-			continue
-		}
-		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
+		if foundID == "" {
 			continue
 		}
 		if !s.reserveTokenPreparation(foundID) {
@@ -3831,7 +3883,7 @@ func (s *Server) getLeonardoSessionForModelExcludingWithPreparationLease(tokenID
 			s.releaseTokenPreparation(foundID)
 			continue
 		}
-		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+		if err := s.ensureGenerationJWTUsable(foundID, session); err != nil {
 			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
 			s.releaseTokenPreparation(foundID)
 			continue
@@ -3862,16 +3914,10 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	candidates := s.generationTokenCandidates(s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy), excluded, modelID, false)
 	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
-		if foundID == "" || (excluded != nil && excluded[foundID]) {
-			continue
-		}
-		if !s.tokenCanAcceptSubmission(foundID) {
-			continue
-		}
-		if !s.tokenCanRunModelByCredits(info, modelID, false) {
+		if foundID == "" {
 			continue
 		}
 
@@ -3883,7 +3929,7 @@ func (s *Server) getLeonardoSessionForModelExcluding(tokenID string, excluded ma
 		if session == nil {
 			continue
 		}
-		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+		if err := s.ensureGenerationJWTUsable(foundID, session); err != nil {
 			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
 			continue
 		}
@@ -3912,6 +3958,9 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		if isExpiredTokenInfo(info) {
 			return nil, ""
 		}
+		if generationJWTWindowPriority(info) > 1 {
+			return nil, ""
+		}
 		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
 			return nil, ""
 		}
@@ -3923,7 +3972,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		if session == nil {
 			return nil, ""
 		}
-		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+		if err := s.ensureGenerationJWTUsable(tokenID, session); err != nil {
 			return nil, ""
 		}
 		return session, tokenID
@@ -3938,16 +3987,10 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		strategy = strings.TrimSpace(s.Config.GetString("token_rotation_strategy", "round_robin"))
 	}
 
-	candidates := s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy)
+	candidates := s.generationTokenCandidates(s.TokenMgr.AvailableTokensForPlatform("leonardo", strategy), nil, modelID, videoReferenceMode)
 	for _, info := range candidates {
 		foundID := strings.TrimSpace(toString(info["id"]))
 		if foundID == "" {
-			continue
-		}
-		if !s.tokenCanAcceptSubmission(foundID) {
-			continue
-		}
-		if !s.tokenCanRunModelByCredits(info, modelID, videoReferenceMode) {
 			continue
 		}
 
@@ -3959,7 +4002,7 @@ func (s *Server) getLeonardoSessionForModel(tokenID string, modelID string, vide
 		if session == nil {
 			continue
 		}
-		if err := s.LeonardoClient.EnsureValidJWT(session); err != nil {
+		if err := s.ensureGenerationJWTUsable(foundID, session); err != nil {
 			log.Printf("[token] failed to prepare Leonardo session for %s: %v", foundID, err)
 			continue
 		}
