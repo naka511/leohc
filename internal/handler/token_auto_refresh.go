@@ -338,6 +338,15 @@ func shouldMarkTokenAbnormalOnRefreshError(err error) bool {
 		strings.Contains(msg, "body keys: [session user]")
 }
 
+func shouldConfirmTokenAbnormalImmediatelyOnRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no jwt found in session response") ||
+		strings.Contains(msg, "body keys")
+}
+
 type leonardoRefreshFailureResult struct {
 	reason      string
 	failCount   int
@@ -351,7 +360,7 @@ func (s *Server) recordLeonardoRefreshFailure(tokenID string, err error) leonard
 	}
 	info := s.TokenMgr.ReportRefreshFailure(tokenID, result.reason)
 	result.failCount = int(toFloat64(info["refresh_fail_count"]))
-	if result.failCount < tokenRefreshFailureThreshold {
+	if !shouldConfirmTokenAbnormalImmediatelyOnRefreshError(err) && result.failCount < tokenRefreshFailureThreshold {
 		return result
 	}
 
