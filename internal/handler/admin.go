@@ -2829,7 +2829,7 @@ func isRetryableLeonardoS3Upload(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "policy expired") ||
-		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "eof") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "timeout") ||
@@ -2841,8 +2841,7 @@ func isRetryableLeonardoS3Upload(err error) bool {
 		strings.Contains(msg, "s3 upload returned 500") ||
 		strings.Contains(msg, "s3 upload returned 502") ||
 		strings.Contains(msg, "s3 upload returned 503") ||
-		strings.Contains(msg, "s3 upload returned 504") ||
-		strings.Contains(msg, ": eof")
+		strings.Contains(msg, "s3 upload returned 504")
 }
 
 func isRetryableRemoteFetchError(err error) bool {
@@ -2877,7 +2876,8 @@ func (s *Server) uploadLeonardoBytesToStaging(session *leonardo.TokenSession, me
 }
 
 func (s *Server) uploadLeonardoBytesToStagingWithFilename(session *leonardo.TokenSession, mediaData []byte, ext, contentType, mediaKind string, originalFilename string) (*leonardo.UploadInitResult, error) {
-	const maxInitAttempts = 5
+	const maxTicketRefreshAttempts = 2
+	const maxInitAttempts = 1 + maxTicketRefreshAttempts
 	var lastErr error
 
 	for attempt := 1; attempt <= maxInitAttempts; attempt++ {
