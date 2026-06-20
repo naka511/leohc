@@ -2,6 +2,7 @@ package leonardo
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -14,6 +15,32 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestUploadImageToS3RetriesTransientUploadErrors(t *testing.T) {
+	attempts := 0
+	client := NewClient("")
+	client.uploadHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts < s3UploadMaxAttempts {
+				return nil, errors.New("EOF")
+			}
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+
+	err := client.UploadImageToS3("https://example.com/upload", `{"key":"test"}`, []byte("image"), "image/png")
+	if err != nil {
+		t.Fatalf("UploadImageToS3 returned error: %v", err)
+	}
+	if attempts != s3UploadMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, s3UploadMaxAttempts)
+	}
 }
 
 func TestGenerateBuildsSora2TextToVideoPayload(t *testing.T) {
